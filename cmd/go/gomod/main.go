@@ -17,30 +17,30 @@
 package main
 
 import (
+	"os"
+
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/golang"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	if !ctx.FileExists("go.mod") {
-		ctx.OptOut("go.mod file not found")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if ctx.FileExists("go.mod") {
+		return gcp.OptInFileFound("go.mod"), nil
 	}
-	return nil
+	return gcp.OptOutFileNotFound("go.mod"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer("gopath")
-	ctx.OverrideBuildEnv(l, "GOPATH", l.Root)
-	ctx.OverrideBuildEnv(l, "GO111MODULE", "on")
+	l := ctx.Layer("gopath", gcp.BuildLayer, gcp.LaunchLayerIfDevMode)
+	l.BuildEnvironment.Override("GOPATH", l.Path)
+	l.BuildEnvironment.Override("GO111MODULE", "on")
 	// Set GOPROXY to ensure no additional dependency is downloaded at built time.
 	// All of them are downloaded here.
-	ctx.OverrideBuildEnv(l, "GOPROXY", "off")
-	ctx.WriteMetadata(l, nil, layers.Build)
+	l.BuildEnvironment.Override("GOPROXY", "off")
 
 	// TODO(b/145604612): Investigate caching the modules layer.
 
@@ -52,23 +52,28 @@ func buildFn(ctx *gcp.Context) error {
 			return nil
 		}
 
-		ctx.Logf("Ignoring `vendor` directory: the Go runtime must be 1.14+ and go.mod should contain a `go 1.14`+ entry")
+		ctx.Warnf(`Ignoring "vendor" directory: To use vendor directory, the Go runtime must be 1.14+ and go.mod must contain a "go 1.14"+ entry. See https://cloud.google.com/appengine/docs/standard/go/specifying-dependencies#vendoring_dependencies.`)
 	}
 
-	env := []string{"GOPATH=" + l.Root, "GO111MODULE=on"}
-	if golang.VersionMatches(ctx, ">=1.15.0") {
-		env = append(env, "GOPROXY=https://proxy.golang.org|direct")
-		ctx.Exec([]string{"go", "mod", "download"}, gcp.WithEnv(env...), gcp.WithUserAttribution)
-	} else {
-		_, err := ctx.ExecWithErr([]string{"go", "mod", "download"}, gcp.WithEnv(env...), gcp.WithUserAttribution)
-		if err != nil {
-			ctx.Warnf("go mod download failed. Retrying with GOSUMDB=off GOPROXY=direct. Error: %v", err)
-			ctx.Exec([]string{"go", "mod", "download"}, gcp.WithEnv(append(env, "GOSUMDB=off", "GOPROXY=direct")...), gcp.WithUserAttribution)
-		}
+	if info, err := os.Stat("go.mod"); err == nil && info.Mode().Perm()&0200 == 0 {
+		return gcp.UserErrorf("go.mod exists but is not writable")
+	}
+	env := []string{"GOPATH=" + l.Path, "GO111MODULE=on"}
+
+	// BuildDirEnv should only be set by App Engine buildpacks.
+	workdir := os.Getenv(golang.BuildDirEnv)
+	if workdir == "" {
+		workdir = ctx.ApplicationRoot()
 	}
 
+	// Go 1.16+ requires a go.sum file. If one does not exist, generate it.
 	// go build -mod=readonly requires a complete graph of modules which `go mod download` does not produce in all cases (https://golang.org/issue/35832).
-	ctx.Exec([]string{"go", "mod", "tidy"}, gcp.WithEnv(env...), gcp.WithUserAttribution)
+	if !ctx.FileExists("go.sum") {
+		ctx.Logf(`go.sum not found, generating using "go mod tidy"`)
+		golang.ExecWithGoproxyFallback(ctx, []string{"go", "mod", "tidy"}, gcp.WithEnv(env...), gcp.WithWorkDir(workdir), gcp.WithUserAttribution)
+	}
+
+	golang.ExecWithGoproxyFallback(ctx, []string{"go", "mod", "download"}, gcp.WithEnv(env...), gcp.WithUserAttribution)
 
 	return nil
 }

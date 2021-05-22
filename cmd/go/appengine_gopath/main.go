@@ -15,7 +15,7 @@
 // Implements go/appengine_gopath buildpack.
 // The appengine_gopath buildpack sets $GOPATH and moves all gopath dependencies from _gopath/src/* to $GOPATH/src/*. The _gopath directory is created by go-app-stager during deployment.
 // It then checks for _gopath/main-package-path which exists if the user's main package was originally on $GOPATH/src locally.
-// If this file exists, the buiuldpack moves the main package to $GOPATH/src and sets the path to build $GOPATH/src/<path-to-main-package> where <path-to-main-package> is read from _gopath/main-package-path.
+// If this file exists, the buildpack moves the main package to $GOPATH/src and sets the path to build $GOPATH/src/<path-to-main-package> where <path-to-main-package> is read from _gopath/main-package-path.
 // If this file doesn't exist, the buildpack sets the path to build to "./..." and removes the _gopath directory because the build will fail if there's more than one go package in application root.
 package main
 
@@ -26,34 +26,32 @@ import (
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if ctx.FileExists("go.mod") {
-		ctx.OptOut("go.mod file found")
+		return gcp.OptOut("go.mod found"), nil
 	}
 	if !ctx.HasAtLeastOne("*.go") {
-		ctx.OptOut("No *.go files found")
+		return gcp.OptOut("no .go files found"), nil
 	}
-	return nil
+	return gcp.OptIn("go.mod file not found, assuming GOPATH build"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer("gopath")
+	l := ctx.Layer("gopath", gcp.BuildLayer)
 
-	goPath := l.Root
+	goPath := l.Path
 	goPathSrc := filepath.Join(goPath, "src")
 
 	ctx.MkdirAll(goPathSrc, 0755)
 
-	ctx.OverrideBuildEnv(l, "GOPATH", goPath)
-	ctx.OverrideBuildEnv(l, "GO111MODULE", "off")
-	ctx.WriteMetadata(l, nil, layers.Build)
+	l.BuildEnvironment.Override("GOPATH", goPath)
+	l.BuildEnvironment.Override("GO111MODULE", "off")
 
 	stagerGoPath := filepath.Join(ctx.ApplicationRoot(), "_gopath")
 	stagerGoPathSrc := filepath.Join(stagerGoPath, "src")
@@ -83,16 +81,20 @@ func buildFn(ctx *gcp.Context) error {
 	}
 
 	if _, exists := os.LookupEnv(env.Buildable); !exists {
-		ctx.OverrideBuildEnv(l, env.Buildable, buildMainPath)
+		l.BuildEnvironment.Override(env.Buildable, buildMainPath)
 	}
+
+	// Unlike in the appengine_gomod buildpack, we do not have to compile gopath apps from a path that ends in /srv/. There are two cases:
+	//  * _gopath/main-package-path exists and app source is put on GOPATH, which is handled by:
+	//			https://github.com/golang/appengine/blob/553959209a20f3be281c16dd5be5c740a893978f/delay/delay.go#L136.
+	//  * _gopath/main-package-path does not exist and the app is built from the current directory, which is handled by:
+	//			https://github.com/golang/appengine/blob/553959209a20f3be281c16dd5be5c740a893978f/delay/delay.go#L125-L127
 
 	// TODO(b/145608768): Investigate creating and caching a GOCACHE layer.
 	return nil
 }
 
 func copyDir(ctx *gcp.Context, src, dst string) {
-	ctx.Debugf("copying %q to %q", src, dst)
-
 	// Trailing "/." copies the contents of src directory, but not src itself.
 	src = filepath.Clean(src) + string(filepath.Separator) + "."
 	ctx.Exec([]string{"cp", "--dereference", "-R", src, dst}, gcp.WithUserTimingAttribution)

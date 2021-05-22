@@ -22,8 +22,43 @@ import (
 	"testing"
 
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/buildpack"
+	"github.com/buildpacks/libcnb"
 )
+
+func TestGoVersion(t *testing.T) {
+	testCases := []struct {
+		goVersion string
+		want      string
+	}{
+		{
+			goVersion: "go version go1.13 darwin/amd64",
+			want:      "1.13",
+		},
+		{
+			goVersion: "go version go1.14.7 darwin/amd64",
+			want:      "1.14.7",
+		},
+		{
+			goVersion: "go version go1.15beta2 darwin/amd64",
+			want:      "1.15",
+		},
+		{
+			goVersion: "go version go1.15rc1 darwin/amd64",
+			want:      "1.15",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.goVersion, func(t *testing.T) {
+			defer func(fn func(*gcp.Context) string) { readGoVersion = fn }(readGoVersion)
+			readGoVersion = func(*gcp.Context) string { return tc.goVersion }
+
+			if got := GoVersion(nil); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestGoModVersion(t *testing.T) {
 	testCases := []struct {
@@ -259,7 +294,7 @@ module dir
 			}
 			defer os.RemoveAll(dir)
 
-			ctx := gcp.NewContextForTests(buildpack.Info{}, dir)
+			ctx := gcp.NewContextForTests(libcnb.BuildpackInfo{}, dir)
 
 			if err := ioutil.WriteFile(filepath.Join(dir, "go.mod"), []byte(tc.gomod), 0644); err != nil {
 				t.Fatalf("writing go.mod: %v", err)
@@ -299,6 +334,10 @@ func TestSupportsNoGoMod(t *testing.T) {
 		},
 		{
 			goVersion: "go version go1.14 darwin/amd64",
+			want:      false,
+		},
+		{
+			goVersion: "go version go1.15rc1 darwin/amd64",
 			want:      false,
 		},
 	}
@@ -397,6 +436,12 @@ func TestVersionMatches(t *testing.T) {
 		},
 		{
 			goVersion:    "go version go1.15 darwin/amd64",
+			goMod:        "module dir\ngo 1.15",
+			versionCheck: ">=1.15.0",
+			want:         true,
+		},
+		{
+			goVersion:    "go version go1.15rc1 darwin/amd64",
 			goMod:        "module dir\ngo 1.15",
 			versionCheck: ">=1.15.0",
 			want:         true,

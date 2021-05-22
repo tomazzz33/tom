@@ -18,7 +18,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -41,6 +41,11 @@ func TestAcceptance(t *testing.T) {
 		{
 			Name:          "single jar",
 			App:           "single_jar",
+			MustNotOutput: []string{"WARNING"},
+		},
+		{
+			Name:          "Java11 compat web app",
+			App:           "java11_compat_webapp",
 			MustNotOutput: []string{"WARNING"},
 		},
 		{
@@ -90,9 +95,8 @@ func TestAcceptance(t *testing.T) {
 			MustNotOutput: []string{"WARNING"},
 		},
 		{
-			Name:          "gradle kotlin",
-			App:           "gradle-kotlin",
-			MustNotOutput: []string{"WARNING"},
+			Name: "gradle kotlin",
+			App:  "gradle-kotlin",
 		},
 		{
 			Name:              "hello quarkus maven with source clearing",
@@ -108,9 +112,16 @@ func TestAcceptance(t *testing.T) {
 			MustNotOutput:     []string{"WARNING"},
 			FilesMustNotExist: []string{"/workspace/src/main/java/example/Application.java", "/workspace/build.gradle"},
 		},
+		{
+			Name:          "Java gradle quarkus",
+			App:           "gradle_quarkus",
+			MustNotOutput: []string{"WARNING"},
+		},
 	}
 	for _, tc := range testCases {
 		tc := tc
+		tc.FlakyBuildAttempts = 3
+
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
 

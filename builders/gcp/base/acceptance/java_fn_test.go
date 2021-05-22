@@ -18,7 +18,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -36,13 +36,37 @@ func TestAcceptance(t *testing.T) {
 			Env:  []string{"GOOGLE_FUNCTION_TARGET=functions.HelloWorld"},
 		},
 		{
+			Name: "function with gradle",
+			App:  "gradle",
+			Env:  []string{"GOOGLE_FUNCTION_TARGET=functions.HelloWorld"},
+		},
+		{
+			Name:              "function with clear source maven",
+			App:               "maven",
+			Env:               []string{"GOOGLE_FUNCTION_TARGET=functions.HelloWorld", "GOOGLE_CLEAR_SOURCE=true"},
+			FilesMustNotExist: []string{"/workspace/src/main/java/functions/HelloWorld.java", "/workspace/pom.xml"},
+		},
+		{
+			Name:              "function with clear source gradle",
+			App:               "gradle",
+			Env:               []string{"GOOGLE_FUNCTION_TARGET=functions.HelloWorld", "GOOGLE_CLEAR_SOURCE=true"},
+			FilesMustNotExist: []string{"/workspace/src/main/java/functions/HelloWorld.java", "/workspace/build.gradle"},
+		},
+		{
 			Name: "prebuilt jar",
 			App:  "jar",
 			Env:  []string{"GOOGLE_FUNCTION_TARGET=functions.jar.HelloWorld"},
 		},
+		{
+			Name: "function with maven wrapper",
+			App:  "mvnw",
+			Env:  []string{"GOOGLE_FUNCTION_TARGET=functions.HelloWorld"},
+		},
 	}
 	for _, tc := range testCases {
 		tc := tc
+		tc.FlakyBuildAttempts = 3
+
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
 

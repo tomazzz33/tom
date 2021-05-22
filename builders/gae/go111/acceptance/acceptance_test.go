@@ -17,7 +17,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -25,11 +25,6 @@ func init() {
 }
 
 func TestAcceptance(t *testing.T) {
-	// TODO(b/161842563): Remove after publishing images.
-	if acceptance.PullImages() {
-		t.Skip("Tests are skipped until stack images are published to gcr.io")
-	}
-
 	builder, cleanup := acceptance.CreateBuilder(t)
 	t.Cleanup(cleanup)
 
@@ -71,7 +66,6 @@ func TestAcceptance(t *testing.T) {
 			Name: "gopath no dependencies",
 			App:  "gopath",
 		},
-
 		// Test that GOOGLE_BUILDABLE takes precedence over app.yaml and go-app-stager.
 		{
 			Name: "gomod GOOGLE_BUILDABLE vs go-app-stager vs app.yaml main package",
@@ -111,6 +105,15 @@ func TestAcceptance(t *testing.T) {
 		{
 			Name: "gomod no dependencies",
 			App:  "gomod",
+		},
+		{
+			Name: "gomod appengine",
+			App:  "gomod_appengine",
+		},
+		// Test that we can build an app with SDK dependencies *without* the GOOGLE_APP_ENGINE_APIS flag set.
+		{
+			Name: "appengine_sdk dependencies",
+			App:  "appengine_sdk",
 		},
 	}
 	for _, tc := range testCases {

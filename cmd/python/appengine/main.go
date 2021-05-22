@@ -21,6 +21,7 @@ import (
 	"regexp"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/appengine"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/appstart"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/blang/semver"
 )
@@ -34,16 +35,41 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	// Always opt in.
-	return nil
+	return gcp.OptInAlways(), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
+	if err := validateAppEngineAPIs(ctx); err != nil {
+		return err
+	}
 	return appengine.Build(ctx, "python", entrypoint)
 }
 
-func entrypoint(ctx *gcp.Context) (*appengine.Entrypoint, error) {
+func validateAppEngineAPIs(ctx *gcp.Context) error {
+	supportsApis, err := appengine.ApisEnabled(ctx)
+	if err != nil {
+		return err
+	}
+
+	usingAppEngine, err := appEngineInDeps(ctx)
+	if err != nil {
+		return err
+	}
+
+	if supportsApis && !usingAppEngine {
+		ctx.Warnf(appengine.UnusedAPIWarning)
+	}
+
+	if !supportsApis && usingAppEngine {
+		ctx.Warnf(appengine.DepWarning)
+	}
+
+	return nil
+}
+
+func entrypoint(ctx *gcp.Context) (*appstart.Entrypoint, error) {
 	// Check installed gunicorn version and warn if version is lower than supported
 	result, err := ctx.ExecWithErr([]string{"python3", "-m", "pip", "show", "gunicorn"}, gcp.WithUserTimingAttribution)
 	if err != nil {
@@ -68,8 +94,20 @@ func entrypoint(ctx *gcp.Context) (*appengine.Entrypoint, error) {
 		ctx.Warnf("Installed gunicorn version %q is less than supported version %q.", version, minVersion)
 	}
 
-	return &appengine.Entrypoint{
-		Type:    appengine.EntrypointDefault.String(),
+	return &appstart.Entrypoint{
+		Type:    appstart.EntrypointDefault.String(),
 		Command: appengine.DefaultCommand,
 	}, nil
+}
+
+func appEngineInDeps(ctx *gcp.Context) (bool, error) {
+	// Check if appengine-python-standard is installed
+	result, err := ctx.ExecWithErr([]string{"python3", "-m", "pip", "show", "appengine-python-standard"}, gcp.WithUserTimingAttribution)
+	if err != nil {
+		if result != nil && result.ExitCode == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("pip show appengine-python-standard: %v", err)
+	}
+	return true, nil
 }

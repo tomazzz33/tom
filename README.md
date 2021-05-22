@@ -7,7 +7,7 @@ Google Cloud's container platforms:
  [Anthos](https://cloud.google.com/anthos),
  and [Compute Engine running Container-Optimized OS](https://cloud.google.com/container-optimized-os/docs).
  They are also used as the build system for [App Engine](https://cloud.google.com/appengine) and [Cloud Functions](https://cloud.google.com/functions).
- They are 100% compatible with [CNCF Buildpacks](https://buildpacks.io/).
+ They are 100% compatible with [Cloud Native Buildpacks](https://buildpacks.io/).
 
 ## Quickstart
 
@@ -48,7 +48,7 @@ specific language or framework.
 * **[Run Image](https://buildpacks.io/docs/concepts/components/stack/)** The container image that serves as the base for the built application.
 
 
-## Generic Builder and Buildpacks
+## General Builder and Buildpacks
 
 This is a general purpose builder that creates container images designed to run on most
 platforms (e.g. Kubernetes / Anthos, Knative / Cloud Run, Container OS, etc),
@@ -56,7 +56,7 @@ and should be used by the majority of users. The builder attempts to autodetect
 the language of your source code, and can also build functions compatible with
 the [Google Cloud Function Framework](https://cloud.google.com/functions/docs/functions-framework) by [setting the GOOGLE_FUNCTION_TARGET env var](#configuration).
 
-The generic builder is hosted at `gcr.io/buildpacks/builder:v1`.
+The general builder is hosted at `gcr.io/buildpacks/builder:v1`.
 
 Supported languages include:
 
@@ -73,9 +73,9 @@ Supported languages include:
 
 These builders create container images designed to run on Google Cloud's App
 Engine and Functions services. Most of the buildpacks are
-identical to those in the generic builder.
+identical to those in the general builder.
 
-Compared to the generic builder, there are two primary differences. First,
+Compared to the general builder, there are two primary differences. First,
 there are additional buildpacks which add transformations specific to each
 service. Second, in order to optimize execution speed, each
 language has a separate builder.
@@ -86,8 +86,8 @@ The Google Cloud Buildpacks project provides builder images suitable for use
 with
 [pack](https://github.com/buildpacks/pack),
 [kpack](https://github.com/pivotal/kpack),
-[tekton](https://github.com/tektoncd/catalog/tree/master/buildpacks),
-[skaffold](https://github.com/GoogleContainerTools/skaffold/tree/master/examples/buildpacks),
+[tekton](https://github.com/tektoncd/catalog/tree/HEAD/task/buildpacks/0.1),
+[skaffold](https://github.com/GoogleContainerTools/skaffold/tree/HEAD/examples/buildpacks),
 and other tools that support the Buildpacks v3 specification.
 
 
@@ -181,10 +181,19 @@ pack build my-app --builder my-builder-image
 ### Configuration
 
 Google Cloud Buildpacks support configuration using a set of **environment
-variables** that are supported across runtimes.
+variables** that are set at build time. For example, when using `pack`:
+
+```bash
+pack build my-app --builder gcr.io/buildpacks/builder:v1 --env GOOGLE_ENTRYPOINT="gunicorn -p :8080 main:app"
+```
+
+#### Common options
+
+The following confguration options are supported across runtimes:
 
 * `GOOGLE_ENTRYPOINT`
   * Specifies the command which is run when the container is executed; equivalent to [entrypoint](https://docs.docker.com/engine/reference/builder/#entrypoint) in a Dockerfile.
+  * See the [default entrypoint behavior](#default-entrypoint-behavior) section for default behavior.
   * **Example:** `gunicorn -p :8080 main:app` for Python. `java -jar target/myjar.jar` for Java.
 * `GOOGLE_RUNTIME`
   * If specified, forces the runtime to opt-in. If the runtime buildpack appears in multiple groups, the first group will be chosen, consistent with the buildpack specification.
@@ -200,14 +209,14 @@ variables** that are supported across runtimes.
   * **Example:** `./maindir` for Go will build the package rooted at maindir.
 * `GOOGLE_BUILD_ARGS`
   * Appends arguments to build command.
-  * *(Currently only applicable to Java Maven and Gradle.)*
+  * *(Currently only applicable to Java Maven and Gradle and .NET)*
   * **Example:** `-Pprod` for a Java will run `mvn clean package ... -Pprod`.
 * `GOOGLE_DEVMODE`
   * Enables the development mode buildpacks. This is used by [Skaffold](https://skaffold.dev) to enable live local development where changes to your source code trigger automatic container rebuilds. To use, install Skaffold and run `skaffold dev`.
   * **Example:** `true`, `True`, `1` will enable development mode.
 * `GOOGLE_CLEAR_SOURCE`
   * Clears source after the application is built. If the application depends on static files, such as Go templates, setting this variable may cause the application to misbehave.
-  * *(Only applicable to Go and Java.)*
+  * *(Only applicable to Go apps and Java apps & functions.)*
   * **Example:** `true`, `True`, `1` will clear the source.
 
 Certain buildpacks support other environment variables:
@@ -222,7 +231,7 @@ See the [contract](https://github.com/GoogleCloudPlatform/functions-framework) f
   * **Example:** `myFunction` will cause the Functions Framework to invoke the function of the same name.
 * `GOOGLE_FUNCTION_SIGNATURE_TYPE`
   * Specifies the signature used by the function.
-  * **Example:** `http` or `event`.
+  * **Example:** `http`, `event`, or `cloudevent`.
 * `GOOGLE_FUNCTION_SOURCE`
   * Specifies the name of the directory or file containing the function source, depending on the language.
   * *(Only applicable to some languages, please see the language-specific [documentation](https://github.com/GoogleCloudPlatform/functions-framework#languages).)*
@@ -248,15 +257,16 @@ variables. These environment variables should be specified without a
       * **Example:** `GOFLAGS=-flag=value` passes `-flag=value` to `go` commands.
 * **Java**
   * `MAVEN_OPTS`, see [documentation](https://maven.apache.org/configure.html).
-    * **Example:** `MAVEN_OPTS=-Xms256m -Xmx512m` passes these flags to the JVM running Maven.
-    * **Example:** `MAVEN_OPTS=--add-opens java.base/java.lang=ALL-UNNAMED` to suppress "illegal reflective access" warnings from Maven.
+      * **Example:** `MAVEN_OPTS=-Xms256m -Xmx512m` passes these flags to the JVM running Maven.
+      * **Example:** `MAVEN_OPTS=--add-opens java.base/java.lang=ALL-UNNAMED` to suppress "illegal reflective access" warnings from Maven.
   * `GRADLE_OPTS`, see [documentation](https://docs.gradle.org/current/userguide/build_environment.html#sec:gradle_configuration_properties).
       * **Example:** `GRADLE_OPTS=-Xms256m -Xmx512m` passes these flags to the JVM running Gradle.
   * Using the Google Maven Central mirror
-      * Mirror URLs can be found [here](https://storage-download.googleapis.com/maven-central/index.html)
+      * Mirror URLs can be found [here](https://storage-download.googleapis.com/maven-central/index.html).
       * For Maven: [Using Mirrors for Repositories](https://maven.apache.org/guides/mini/guide-mirror-settings.html)
-         * Create a copy of the settings.xml from the default location of ~/.m2/settings.xml to inside your application source directory and specify `GOOGLE_BUILD_ARGS=--settings <path/to/settings>`. (Note <path/to/settings> is relative to the source directory.)
-         * Example `settings.xml`
+         * Create a copy of the settings.xml from the default location of ~/.m2/settings.xml to inside your application source directory and specify `GOOGLE_BUILD_ARGS=--settings <path/to/settings>`.
+         * Note: <path/to/settings> is relative to the source directory.
+         * Example `settings.xml`:
 
               ```
               <settings>
@@ -271,8 +281,7 @@ variables. These environment variables should be specified without a
               </settings>
               ```
       * For Gradle: [Declaring Repositories](https://docs.gradle.org/current/userguide/declaring_repositories.html)
-
-          * Example `build.gradle` entry
+          * Example `build.gradle` entry:
 
               ```
               repositories {
@@ -281,7 +290,9 @@ variables. These environment variables should be specified without a
                   }
               }
               ```
-
+  * The Maven buildpack supports the [Polyglot extensions for Maven](https://github.com/takari/polyglot-maven#overview).
+    The Polyglot extensions are enabled by placing a suitably-configured
+    `.mvn/extensions.xml` in your application source directory.
 * **Node.js**
   * `NPM_CONFIG_<key>`, see [documentation](https://docs.npmjs.com/misc/config#environment-variables).
       * **Example:** `NPM_CONFIG_FLAG=value` passes `-flag=value` to `npm` commands.
@@ -296,10 +307,50 @@ variables. These environment variables should be specified without a
       * **Example:** `BUNDLE_TIMEOUT=60` sets `--timeout=60` for `bundle` commands.
 
 
+## Default entrypoint behavior
+
+* If `GOOGLE_ENTRYPOINT` is specified, use:
+  * `/bin/bash -c <entrypoint>`
+* If `Procfile` exists at the application root and contains a `web` process, use:
+  * `/bin/bash -c <web process>`
+* Otherwise, use language-specific behavior below.
+
+### Language-specific behavior
+
+* **.NET**
+  * Search the output directory for a binary or a library with the same name as the project file (e.g. app.csproj --> app or app.dll).
+      * `/bin/bash -c exec <project name>`
+      * `/bin/bash -c dotnet <project name>.dll`
+  * Parse the project file for an `AssemblyName` field and search for the associated binary or library file in the output directory.
+      * `/bin/bash -c exec <assembly name>`
+      * `/bin/bash -c dotnet <assembly name>.dll`
+* **Go**
+  * Use `<layer/path>/main`, where `main` is the compiled binary.
+  * The `main` binary is also available on `$PATH`.
+* **Java**
+  * Use the first executable .jar file found in the following directories, in order:
+      * `<workspace>/target`
+      * `<workspace>/build`
+      * `<workspace>/build/libs`
+      * `<workspace>`
+  * If exactly one executable .jar file is found, use:
+      * `java -jar <executable.jar>`
+  * For "exploded jars", e.g. Spring Boot, find the `Main-Class` entry from the manifest and use:
+      * `java -classpath . <class>`
+* **Node.js**
+  * Use `npm start`; see the [npm documentation](https://docs.npmjs.com/cli/start.html).
+* **PHP**
+  * Not available in the general builder.
+* **Python**
+  * No default entrypoint logic.
+* **Ruby**
+  * Not available in the general builder.
+
 ## Known Limitations
 
 * **General**:
   * Caching is project-specific, not cross-project. Dependencies, such as the JDK, cannot be shared across projects and need to be redownloaded on first build.
+  * Built images have their creation time set to 40 years in the past. See [reproducible builds](https://buildpacks.io/docs/reference/reproducibility/).
 * **Node**:
   * Custom build steps (e.g. executing the "build" script of package.json) are not supported.
   * Existing `node_modules` directory is deleted and dependencies reinstalled using package.json and a lockfile if present.
@@ -309,10 +360,10 @@ variables. These environment variables should be specified without a
 * **Go**
   * Private dependencies must be vendored. The build does not have access to private repository credentials and cannot pull dependencies at build time.
     Please see the App Engine [instructions](https://cloud.google.com/appengine/docs/standard/go/specifying-dependencies#using_private_dependencies)
-  * *(generic builder only)* Applications without a go.mod cannot have sub-packages.
+  * *(general builder only)* Applications without a go.mod cannot have sub-packages.
   * Go 1.14 triggers a kernel bug in some versions of the Linux kernel
 (versions other than 5.3.15+, 5.4.2+, or 5.5+). If using an affected version,
-please set the following in your /etc/docker/daemon.json:
+please set the following in your `/etc/docker/daemon.json`:
 
     ```
     "default-ulimits": {
@@ -337,10 +388,10 @@ steps:
   args: ['build', '--builder=gcr.io/buildpacks/builder', '--publish', 'gcr.io/$PROJECT_ID/sample-go:$COMMIT_SHA']
 ```
 
-There is also alpha support for invoking this builder directly [using `gcloud`](https://cloud.google.com/sdk/gcloud/reference/alpha/builds/submit):
+There is also support for invoking this builder directly [using `gcloud`](https://cloud.google.com/sdk/gcloud/reference/builds/submit):
 
 ```
-gcloud alpha builds submit --pack image=gcr.io/my-project/imageg
+gcloud builds submit --pack image=gcr.io/my-project/imageg
 ```
 
 This command will send the local source directory to Cloud Build, invoke this buildpack builder on it, and publish the resulting image to Google Container Registry.
@@ -361,7 +412,7 @@ We welcome contributions! Here's how you can contribute:
 
 * [Browse issues](https://github.com/GoogleCloudPlatform/buildpacks/issues) or [file an issue](https://github.com/GoogleCloudPlatform/buildpacks/issues/new)
 * Contribute:
-  * *Read the [contributing guide](https://github.com/GoogleCloudPlatform/buildpacks/blob/master/CONTRIBUTING.md) before starting work on an issue*
+  * *Read the [contributing guide](https://github.com/GoogleCloudPlatform/buildpacks/blob/main/CONTRIBUTING.md) before starting work on an issue*
   * Try to fix [good first issues](https://github.com/GoogleCloudPlatform/buildpacks/labels/good%20first%20issue)
   * Help out on [issues that need help](https://github.com/GoogleCloudPlatform/buildpacks/labels/help%20wanted)
   * Join in on [discussion issues](https://github.com/GoogleCloudPlatform/buildpacks/labels/discuss)

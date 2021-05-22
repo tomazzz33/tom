@@ -17,31 +17,30 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if proj := os.Getenv(env.GAEMain); proj == "" {
-		ctx.OptOut("app.yaml main field is not defined, using default")
+		return gcp.OptOut("app.yaml main field is not defined, using default"), nil
 	}
 
 	if _, exists := os.LookupEnv(env.Buildable); exists {
-		ctx.OptOut("%s is set, ignoring app.yaml main field", env.Buildable)
+		return gcp.OptOut(fmt.Sprintf("%s is set, ignoring app.yaml main field", env.Buildable)), nil
 	}
-	return nil
+	return gcp.OptIn("app.yaml found with the main field set"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer("main_env")
-	ctx.OverrideBuildEnv(l, env.Buildable, os.Getenv(env.GAEMain))
-	ctx.WriteMetadata(l, nil, layers.Build)
+	l := ctx.Layer("main_env", gcp.BuildLayer)
+	l.BuildEnvironment.Override(env.Buildable, os.Getenv(env.GAEMain))
 	return nil
 }

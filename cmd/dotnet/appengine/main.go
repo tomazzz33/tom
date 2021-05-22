@@ -20,6 +20,7 @@ import (
 	"os"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/appengine"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/appstart"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 )
@@ -28,20 +29,19 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	// Always opt in.
-	return nil
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	return gcp.OptInAlways(), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
 	return appengine.Build(ctx, "dotnet", entrypoint)
 }
 
-func entrypoint(ctx *gcp.Context) (*appengine.Entrypoint, error) {
+func entrypoint(ctx *gcp.Context) (*appstart.Entrypoint, error) {
 	ep := os.Getenv(env.Entrypoint)
 	if ep == "" {
 		return nil, gcp.UserErrorf("expected entrypoint from app.yaml or root project file, found nothing")
 	}
 	ctx.Logf("Using the entrypoint: %q", ep)
-	return &appengine.Entrypoint{Type: appengine.EntrypointGenerated.String(), Command: ep}, nil
+	return &appstart.Entrypoint{Type: appstart.EntrypointGenerated.String(), Command: ep}, nil
 }

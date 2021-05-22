@@ -23,40 +23,41 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/devmode"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/dotnet"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/runtime"
-	"github.com/buildpack/libbuildpack/buildpackplan"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
-	sdkLayer     = "sdk"
-	runtimeLayer = "runtime"
-	sdkURL       = "https://dotnetcli.azureedge.net/dotnet/Sdk/%[1]s/dotnet-sdk-%[1]s-linux-x64.tar.gz"
-	versionURL   = "https://dotnetcli.azureedge.net/dotnet/Sdk/LTS/latest.version"
+	sdkLayer       = "sdk"
+	runtimeLayer   = "runtime"
+	sdkURL         = "https://dotnetcli.azureedge.net/dotnet/Sdk/%[1]s/dotnet-sdk-%[1]s-linux-x64.tar.gz"
+	uncachedSdkURL = "https://dotnetcli.blob.core.windows.net/dotnet/Sdk/%[1]s/dotnet-sdk-%[1]s-linux-x64.tar.gz"
+	versionURL     = "https://dotnetcli.blob.core.windows.net/dotnet/Sdk/LTS/latest.version"
+	versionKey     = "version"
 )
-
-// metadata represents metadata stored for a runtime layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	runtime.CheckOverride(ctx, "dotnet")
-
-	if len(dotnet.ProjectFiles(ctx, ".")) == 0 && !ctx.HasAtLeastOne("*.dll") {
-		ctx.OptOut("No project files nor .dll files found.")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if result := runtime.CheckOverride(ctx, "dotnet"); result != nil {
+		return result, nil
 	}
 
-	return nil
+	if files := dotnet.ProjectFiles(ctx, "."); len(files) != 0 {
+		return gcp.OptIn("found project files: " + strings.Join(files, ", ")), nil
+	}
+	if ctx.HasAtLeastOne("*.dll") {
+		return gcp.OptIn("found .dll files"), nil
+	}
+
+	return gcp.OptOut("no project files or .dll files found"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -65,18 +66,15 @@ func buildFn(ctx *gcp.Context) error {
 		return err
 	}
 
+	sdkl := ctx.Layer(sdkLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayerIfDevMode)
+	rtl := ctx.Layer(runtimeLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
+
 	// Check the metadata in the cache layer to determine if we need to proceed.
-	var sdkMeta metadata
-	sdkl := ctx.Layer(sdkLayer)
-	ctx.ReadMetadata(sdkl, &sdkMeta)
-
-	var rtMeta metadata
-	rtl := ctx.Layer(runtimeLayer)
-	ctx.ReadMetadata(rtl, &rtMeta)
-
 	// Each SDK is associated with one Core version, but the reverse is not true.
 	// We use the SDK version as the "runtime" version.
-	if version == sdkMeta.Version && version == rtMeta.Version {
+	sdkMetaVersion := ctx.GetMetadata(sdkl, versionKey)
+	rtMetaVersion := ctx.GetMetadata(rtl, versionKey)
+	if version == sdkMetaVersion && version == rtMetaVersion {
 		ctx.CacheHit(sdkLayer)
 		ctx.CacheHit(runtimeLayer)
 		ctx.Logf(".NET cache hit, skipping installation.")
@@ -89,39 +87,32 @@ func buildFn(ctx *gcp.Context) error {
 	ctx.CacheMiss(runtimeLayer)
 	ctx.ClearLayer(rtl)
 
-	archiveURL := fmt.Sprintf(sdkURL, version)
-	if code := ctx.HTTPStatus(archiveURL); code != http.StatusOK {
-		return gcp.UserErrorf("Runtime version %s does not exist at %s (status %d). You can specify the version with %s.", version, archiveURL, code, env.RuntimeVersion)
+	archiveURL, err := archiveURL(ctx, version)
+	if err != nil {
+		return err
 	}
 
 	ctx.Logf("Installing .NET SDK v%s", version)
 	// Ensure there's a symlink from runtime/sdk dir to the sdk layer.
 	// TODO(b/150893022): remove the symlink in the final image.
-	ctx.Exec([]string{"ln", "--symbolic", "--force", sdkl.Root, filepath.Join(rtl.Root, "sdk")})
+	ctx.Exec([]string{"ln", "--symbolic", "--force", sdkl.Path, filepath.Join(rtl.Path, "sdk")})
 
 	// With --keep-directory-symlink, the SDK will be unpacked into /runtime/sdk,
 	// which is symlinked to the SDK layer. This is needed because the dotnet CLI
 	// needs an sdk directory in the same directory as the dotnet executable.
-	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --keep-directory-symlink --strip-components=1", archiveURL, rtl.Root)
+	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --keep-directory-symlink --strip-components=1", archiveURL, rtl.Path)
 	ctx.Exec([]string{"bash", "-c", command}, gcp.WithUserAttribution)
 
 	// Keep the SDK layer for launch in devmode because we use `dotnet watch`.
-	sdkMeta.Version = version
-	if devmode.Enabled(ctx) {
-		ctx.WriteMetadata(sdkl, sdkMeta, layers.Launch, layers.Build, layers.Cache)
-	} else {
-		ctx.WriteMetadata(sdkl, sdkMeta, layers.Build, layers.Cache)
-	}
+	ctx.SetMetadata(sdkl, versionKey, version)
+	ctx.SetMetadata(rtl, versionKey, version)
+	rtl.SharedEnvironment.Default("DOTNET_ROOT", rtl.Path)
+	rtl.SharedEnvironment.PrependPath("PATH", rtl.Path)
+	rtl.LaunchEnvironment.Default("DOTNET_RUNNING_IN_CONTAINER", "true")
 
-	rtMeta.Version = version
-	ctx.DefaultSharedEnv(rtl, "DOTNET_ROOT", rtl.Root)
-	ctx.PrependPathSharedEnv(rtl, "PATH", rtl.Root)
-	ctx.DefaultLaunchEnv(rtl, "DOTNET_RUNNING_IN_CONTAINER", "true")
-	ctx.WriteMetadata(rtl, rtMeta, layers.Launch, layers.Build, layers.Cache)
-
-	ctx.AddBuildpackPlan(buildpackplan.Plan{
-		Name:    runtimeLayer,
-		Version: version,
+	ctx.AddBuildpackPlanEntry(libcnb.BuildpackPlanEntry{
+		Name:     runtimeLayer,
+		Metadata: map[string]interface{}{"version": version},
 	})
 
 	return nil
@@ -160,9 +151,25 @@ func runtimeVersion(ctx *gcp.Context) (string, error) {
 	}
 
 	// Use the latest LTS version.
-	command := fmt.Sprintf("curl --silent %s | tail -n 1", versionURL)
+	command := fmt.Sprintf("curl --fail --show-error --silent --location %s | tail -n 1", versionURL)
 	result := ctx.Exec([]string{"bash", "-c", command}, gcp.WithUserAttribution)
 	version = result.Stdout
 	ctx.Logf("Using the latest LTS version of .NET Core SDK: %s", version)
 	return version, nil
+}
+
+// archiveURL returns the URL to fetch the .NET SDK.
+func archiveURL(ctx *gcp.Context, version string) (string, error) {
+	url := fmt.Sprintf(sdkURL, version)
+	if code := ctx.HTTPStatus(url); code == http.StatusOK {
+		return url, nil
+	}
+
+	// Retry with the uncached URL.
+	url = fmt.Sprintf(uncachedSdkURL, version)
+	if code := ctx.HTTPStatus(url); code != http.StatusOK {
+		return "", gcp.UserErrorf("Runtime version %s does not exist at %s (status %d). You can specify the version with %s.", version, url, code, env.RuntimeVersion)
+	}
+
+	return url, nil
 }

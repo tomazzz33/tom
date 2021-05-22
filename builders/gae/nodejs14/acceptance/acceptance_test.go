@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -53,6 +53,11 @@ func TestAcceptance(t *testing.T) {
 		},
 		{
 			App:        "package_lock",
+			MustUse:    []string{npm},
+			MustNotUse: []string{yarn},
+		},
+		{
+			App:        "npm_shrinkwrap",
 			MustUse:    []string{npm},
 			MustNotUse: []string{yarn},
 		},

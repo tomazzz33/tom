@@ -19,16 +19,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/cache"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/python"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
 	layerName = "pip"
-	cacheName = "pipcache"
 )
 
 // metadata represents metadata stored for a dependencies layer.
@@ -42,41 +42,46 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	if !ctx.FileExists("requirements.txt") {
-		ctx.OptOut("requirements.txt not found")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	plan := libcnb.BuildPlan{Requires: python.RequirementsRequires}
+	// If a requirement.txt file exists, the buildpack needs to provide the Requirements dependency.
+	// If the dependency is not provided by any buildpacks, lifecycle will exclude the pip
+	// buildpack from the build.
+	if ctx.FileExists("requirements.txt") {
+		plan.Provides = python.RequirementsProvides
 	}
-	return nil
+	return gcp.OptInAlways(gcp.WithBuildPlans(plan)), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer(layerName)
-	cl := ctx.Layer(cacheName)
+	// Remove leading and trailing : because otherwise SplitList will add empty strings.
+	reqs := filepath.SplitList(strings.Trim(os.Getenv(python.RequirementsFilesEnv), string(os.PathListSeparator)))
 
-	cached, meta, err := python.CheckCache(ctx, l, cache.WithFiles("requirements.txt"))
-	if err != nil {
-		return fmt.Errorf("checking cache: %w", err)
+	// The workspace requirements.txt file should be installed last.
+	if ctx.FileExists("requirements.txt") {
+		reqs = append(reqs, "requirements.txt")
 	}
-	if cached {
-		ctx.CacheHit(layerName)
+
+	l := ctx.Layer(layerName, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
+
+	err := python.InstallRequirements(ctx, l, reqs...)
+	if err != nil {
+		return fmt.Errorf("installing dependencies: %w", err)
+	}
+
+	ctx.Logf("Checking for incompatible dependencies.")
+	result, err := ctx.ExecWithErr([]string{"python3", "-m", "pip", "check"}, gcp.WithUserAttribution)
+	if result == nil {
+		return fmt.Errorf("pip check: %w", err)
+	}
+	if result.ExitCode == 0 {
 		return nil
 	}
-	ctx.CacheMiss(layerName)
-
-	// Install modules in requirements.txt.
-	ctx.Logf("Running pip install.")
-	ctx.Exec([]string{"python3", "-m", "pip", "install", "--upgrade", "-r", "requirements.txt", "-t", l.Root}, gcp.WithEnv("PIP_CACHE_DIR="+cl.Root), gcp.WithUserAttribution)
-
-	ctx.PrependPathSharedEnv(l, "PYTHONPATH", l.Root)
-
-	// Check for broken dependencies.
-	ctx.Logf("Checking for incompatible dependencies.")
-	checkDeps := ctx.Exec([]string{"python3", "-m", "pip", "check"}, gcp.WithEnv("PYTHONPATH="+l.Root+":"+os.Getenv("PYTHONPATH")), gcp.WithUserAttribution)
-	if checkDeps.ExitCode != 0 {
-		return fmt.Errorf("incompatible dependencies installed: %q", checkDeps.Stdout)
+	// HACK: For backwards compatibility on App Engine and Cloud Functions Python 3.7 only report a warning.
+	if strings.HasPrefix(python.Version(ctx), "Python 3.7") {
+		ctx.Warnf("Found incompatible dependencies: %q", result.Stdout)
+		return nil
 	}
+	return gcp.UserErrorf("found incompatible dependencies: %q", result.Stdout)
 
-	ctx.WriteMetadata(l, &meta, layers.Build, layers.Cache, layers.Launch)
-	ctx.WriteMetadata(cl, nil, layers.Cache)
-	return nil
 }

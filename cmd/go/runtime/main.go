@@ -23,12 +23,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/devmode"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/golang"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/runtime"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -36,24 +34,22 @@ const (
 	goVersionURL = "https://golang.org/dl/?mode=json"
 	goURL        = "https://dl.google.com/go/go%s.linux-amd64.tar.gz"
 	goLayer      = "go"
+	versionKey   = "version"
 )
-
-// metadata represents metadata stored for a runtime layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	runtime.CheckOverride(ctx, "go")
-
-	if !ctx.HasAtLeastOne("*.go") {
-		ctx.OptOut("No *.go files found.")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if result := runtime.CheckOverride(ctx, "go"); result != nil {
+		return result, nil
 	}
-	return nil
+
+	if ctx.HasAtLeastOne("*.go") {
+		return gcp.OptIn("found .go files"), nil
+	}
+	return gcp.OptOut("no .go files found"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -61,11 +57,11 @@ func buildFn(ctx *gcp.Context) error {
 	if err != nil {
 		return err
 	}
-	grl := ctx.Layer(goLayer)
+	grl := ctx.Layer(goLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayerIfDevMode)
+
 	// Check metadata layer to see if correct version of Go is already installed.
-	var meta metadata
-	ctx.ReadMetadata(grl, &meta)
-	if version == meta.Version {
+	metaVersion := ctx.GetMetadata(grl, versionKey)
+	if version == metaVersion {
 		ctx.CacheHit(goLayer)
 	} else {
 		ctx.CacheMiss(goLayer)
@@ -78,18 +74,10 @@ func buildFn(ctx *gcp.Context) error {
 
 		// Download and install Go in layer.
 		ctx.Logf("Installing Go v%s", version)
-		command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, grl.Root)
+		command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, grl.Path)
 		ctx.Exec([]string{"bash", "-c", command}, gcp.WithUserAttribution)
-
-		meta.Version = version
+		ctx.SetMetadata(grl, versionKey, version)
 	}
-
-	// Write the layer information.
-	lf := []layers.Flag{layers.Build, layers.Cache}
-	if devmode.Enabled(ctx) {
-		lf = append(lf, layers.Launch)
-	}
-	ctx.WriteMetadata(grl, meta, lf...)
 
 	return nil
 }
@@ -118,7 +106,7 @@ type goReleases []struct {
 
 // latestGoVersion returns the latest version of Go
 func latestGoVersion(ctx *gcp.Context) (string, error) {
-	result := ctx.Exec([]string{"curl", "--silent", goVersionURL}, gcp.WithUserAttribution)
+	result := ctx.Exec([]string{"curl", "--fail", "--show-error", "--silent", "--location", goVersionURL}, gcp.WithUserAttribution)
 	return parseVersionJSON(result.Stdout)
 }
 

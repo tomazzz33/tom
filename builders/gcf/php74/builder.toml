@@ -13,8 +13,16 @@ description = "Builder for the GCF PHP 7.4 runtime"
   uri = "functions_framework.tgz"
 
 [[buildpacks]]
+  id = "google.php.cloudfunctions"
+  uri = "cloudfunctions.tgz"
+
+[[buildpacks]]
   id = "google.utils.archive-source"
   uri = "archive_source.tgz"
+
+[[buildpacks]]
+  id = "google.utils.label"
+  uri = "label.tgz"
 
 [[order]]
 
@@ -32,10 +40,16 @@ description = "Builder for the GCF PHP 7.4 runtime"
   [[order.group]]
     id = "google.php.functions-framework"
 
+  [[order.group]]
+    id = "google.php.cloudfunctions"
+
+  [[order.group]]
+    id = "google.utils.label"
+
 [stack]
   id = "google.php74"
   build-image = "gcr.io/gae-runtimes/buildpacks/php74/build"
   run-image = "gcr.io/gae-runtimes/buildpacks/php74/run"
 
 [lifecycle]
-  version = "0.8.1"
+  version = "0.11.1"

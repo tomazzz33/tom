@@ -26,7 +26,6 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/golang"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -38,29 +37,25 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if !ctx.HasAtLeastOne("*.go") {
-		ctx.OptOut("No *.go files found")
+		return gcp.OptOut("no .go files found"), nil
 	}
-	return nil
+	return gcp.OptIn("found .go files"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	// Create a cached layer for the GOCACHE.
-	cl := ctx.Layer("gocache")
-	lf := []layers.Flag{layers.Cache, layers.Build}
+	// Keep GOCACHE in Devmode for faster rebuilds.
+	cl := ctx.Layer("gocache", gcp.BuildLayer, gcp.LaunchLayerIfDevMode)
 	if devmode.Enabled(ctx) {
-		lf = append(lf, layers.Launch)
-		ctx.OverrideLaunchEnv(cl, "GOCACHE", cl.Root)
+		cl.LaunchEnvironment.Override("GOCACHE", cl.Path)
 	}
-	ctx.WriteMetadata(cl, nil, lf...)
 
 	// Create a layer for the compiled binary.  Add it to PATH in case
 	// users wish to invoke the binary manually.
-	bl := ctx.Layer("bin")
-	ctx.PrependPathLaunchEnv(bl, "PATH", bl.Root)
-	ctx.WriteMetadata(bl, nil, layers.Launch)
-	outBin := filepath.Join(bl.Root, golang.OutBin)
+	bl := ctx.Layer("bin", gcp.LaunchLayer)
+	bl.LaunchEnvironment.PrependPath("PATH", bl.Path)
+	outBin := filepath.Join(bl.Path, golang.OutBin)
 
 	buildable, err := goBuildable(ctx)
 	if err != nil {
@@ -72,9 +67,14 @@ func buildFn(ctx *gcp.Context) error {
 	bld = append(bld, goBuildFlags()...)
 	bld = append(bld, "-o", outBin)
 	bld = append(bld, buildable)
-	ctx.Exec(bld, gcp.WithEnv("GOCACHE="+cl.Root), gcp.WithMessageProducer(printTipsAndKeepStderrTail(ctx)), gcp.WithUserAttribution)
+	// BuildDirEnv should only be set by App Engine buildpacks.
+	workdir := os.Getenv(golang.BuildDirEnv)
+	if workdir == "" {
+		workdir = ctx.ApplicationRoot()
+	}
+	ctx.Exec(bld, gcp.WithEnv("GOCACHE="+cl.Path), gcp.WithWorkDir(workdir), gcp.WithMessageProducer(printTipsAndKeepStderrTail(ctx)), gcp.WithUserAttribution)
 
-	// Configure the entrypoint for production.  Use the full path to save `skaffold debug`
+	// Configure the entrypoint for production. Use the full path to save `skaffold debug`
 	// from fetching the remote container image (tens to hundreds of megabytes), which is slow.
 	if !devmode.Enabled(ctx) {
 		ctx.AddWebProcess([]string{outBin})

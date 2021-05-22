@@ -22,28 +22,27 @@ import (
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/cache"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
-	layerName = "gems"
+	layerName         = "gems"
+	dependencyHashKey = "dependency_hash"
+	rubyVersionKey    = "ruby_version"
 )
-
-// metadata represents metadata stored for a dependencies layer.
-type metadata struct {
-	RubyVersion    string `toml:"ruby_version"`
-	DependencyHash string `toml:"dependency_hash"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	if !ctx.FileExists("gems.rb") && !ctx.FileExists("Gemfile") {
-		ctx.OptOut("Neither Gemfile nor gems.rb found.")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if ctx.FileExists("Gemfile") {
+		return gcp.OptInFileFound("Gemfile"), nil
 	}
-	return nil
+	if ctx.FileExists("gems.rb") {
+		return gcp.OptInFileFound("gems.rb"), nil
+	}
+	return gcp.OptOut("no Gemfile or gems.rb found"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -65,29 +64,41 @@ func buildFn(ctx *gcp.Context) error {
 		lockFile = "gems.locked"
 	}
 
-	deps := ctx.Layer(layerName)
-	// This layer directory contains the files installed by bundler into the application .bundle directory
-	bundleOutput := filepath.Join(deps.Root, ".bundle")
+	// Remove any user-provided local bundle config and cache that can interfere with the build process.
+	ctx.RemoveAll(".bundle")
 
-	cached, meta, err := checkCache(ctx, deps, cache.WithFiles(lockFile))
+	deps := ctx.Layer(layerName, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
+
+	// This layer directory contains the files installed by bundler into the application .bundle directory
+	bundleOutput := filepath.Join(deps.Path, ".bundle")
+
+	cached, err := checkCache(ctx, deps, cache.WithFiles(lockFile))
 	if err != nil {
 		return fmt.Errorf("checking cache: %w", err)
 	}
+
+	localGemsDir := filepath.Join(".bundle", "gems")
+	localBinDir := filepath.Join(".bundle", "bin")
+
+	// Ensure the GCP runtime platform is present in the lockfile. This is needed for Bundler >= 2.2, in case the user's lockfile is specific to a different platform.
+	ctx.Exec([]string{"bundle", "config", "--local", "without", "development test"}, gcp.WithUserAttribution)
+	ctx.Exec([]string{"bundle", "config", "--local", "path", localGemsDir}, gcp.WithUserAttribution)
+	ctx.Exec([]string{"bundle", "lock", "--add-platform", "x86_64-linux"}, gcp.WithUserAttribution)
+	ctx.Exec([]string{"bundle", "lock", "--add-platform", "ruby"}, gcp.WithUserAttribution)
+	ctx.RemoveAll(".bundle")
+
 	if cached {
 		ctx.CacheHit(layerName)
 	} else {
 		ctx.CacheMiss(layerName)
 
-		localGemsDir := filepath.Join(".bundle", "gems")
-		localBinDir := filepath.Join(".bundle", "bin")
-
 		// Install the bundle locally into .bundle/gems
-		ctx.RemoveAll(localGemsDir, localBinDir)
 		ctx.Exec([]string{"bundle", "config", "--local", "deployment", "true"}, gcp.WithUserAttribution)
 		ctx.Exec([]string{"bundle", "config", "--local", "frozen", "true"}, gcp.WithUserAttribution)
 		ctx.Exec([]string{"bundle", "config", "--local", "without", "development test"}, gcp.WithUserAttribution)
 		ctx.Exec([]string{"bundle", "config", "--local", "path", localGemsDir}, gcp.WithUserAttribution)
-		ctx.Exec([]string{"bundle", "install"}, gcp.WithUserAttribution)
+		ctx.Exec([]string{"bundle", "install"},
+			gcp.WithEnv("NOKOGIRI_USE_SYSTEM_LIBRARIES=1", "MALLOC_ARENA_MAX=2", "LANG=C.utf8"), gcp.WithUserAttribution)
 
 		// Find any gem-installed binary directory and symlink as a static path
 		foundBinDirs := ctx.Glob(".bundle/gems/ruby/*/bin")
@@ -103,40 +114,37 @@ func buildFn(ctx *gcp.Context) error {
 	}
 
 	// Always link local .bundle directory to the actual installation stored in the layer.
-	ctx.RemoveAll(".bundle")
 	ctx.Symlink(bundleOutput, ".bundle")
 
-	ctx.WriteMetadata(deps, &meta, layers.Build, layers.Cache, layers.Launch)
 	return nil
 }
 
 // checkCache checks whether cached dependencies exist and match.
-func checkCache(ctx *gcp.Context, l *layers.Layer, opts ...cache.Option) (bool, *metadata, error) {
+func checkCache(ctx *gcp.Context, l *libcnb.Layer, opts ...cache.Option) (bool, error) {
 	currentRubyVersion := ctx.Exec([]string{"ruby", "-v"}).Stdout
 	opts = append(opts, cache.WithStrings(currentRubyVersion))
 	currentDependencyHash, err := cache.Hash(ctx, opts...)
 	if err != nil {
-		return false, nil, fmt.Errorf("computing dependency hash: %v", err)
+		return false, fmt.Errorf("computing dependency hash: %v", err)
 	}
-
-	var meta metadata
-	ctx.ReadMetadata(l, &meta)
 
 	// Perform install, skipping if the dependency hash matches existing metadata.
+	metaDependencyHash := ctx.GetMetadata(l, dependencyHashKey)
 	ctx.Debugf("Current dependency hash: %q", currentDependencyHash)
-	ctx.Debugf("  Cache dependency hash: %q", meta.DependencyHash)
-	if currentDependencyHash == meta.DependencyHash {
+	ctx.Debugf("  Cache dependency hash: %q", metaDependencyHash)
+	if currentDependencyHash == metaDependencyHash {
 		ctx.Logf("Dependencies cache hit, skipping installation.")
-		return true, &meta, nil
+		return true, nil
 	}
 
-	if meta.DependencyHash == "" {
+	if metaDependencyHash == "" {
 		ctx.Debugf("No metadata found from a previous build, skipping cache.")
 	}
 	ctx.Logf("Installing application dependencies.")
-	// Update the layer metadata.
-	meta.DependencyHash = currentDependencyHash
-	meta.RubyVersion = currentRubyVersion
 
-	return false, &meta, nil
+	// Update the layer metadata.
+	ctx.SetMetadata(l, dependencyHashKey, currentDependencyHash)
+	ctx.SetMetadata(l, rubyVersionKey, currentRubyVersion)
+
+	return false, nil
 }

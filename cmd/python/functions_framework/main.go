@@ -17,16 +17,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/cache"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/python"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -42,22 +39,20 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if _, ok := os.LookupEnv(env.FunctionTarget); ok {
-		ctx.OptIn("%s set", env.FunctionTarget)
+		return gcp.OptInEnvSet(env.FunctionTarget, gcp.WithBuildPlans(python.RequirementsProvidesPlan)), nil
 	}
-	ctx.OptOut("%s not set", env.FunctionTarget)
-	return nil
+	return gcp.OptOutEnvNotSet(env.FunctionTarget), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-
 	if err := validateSource(ctx); err != nil {
 		return err
 	}
 
-	// Check for syntax errors.
-	ctx.Exec([]string{"python3", "-m", "compileall", "-q", "."}, gcp.WithStdoutTail, gcp.WithUserAttribution)
+	// Check for syntax errors to prevent failures that would only manifest at run time.
+	ctx.Exec([]string{"python3", "-m", "compileall", "-f", "-q", "."}, gcp.WithStdoutTail, gcp.WithUserAttribution)
 
 	// Determine if the function has dependency on functions-framework.
 	hasFrameworkDependency := false
@@ -66,19 +61,18 @@ func buildFn(ctx *gcp.Context) error {
 		hasFrameworkDependency = containsFF(string(content))
 	}
 
-	// Install functions-framework.
-	l := ctx.Layer(layerName)
+	// Install functions-framework if necessary.
+	l := ctx.Layer(layerName, gcp.LaunchLayer, gcp.BuildLayer)
 	if hasFrameworkDependency {
 		ctx.Logf("Handling functions with dependency on functions-framework.")
 		ctx.ClearLayer(l)
-
-		// With framework dependency, framework module is in pip buildpack, so only env vars are present in this layer.
-		ctx.WriteMetadata(l, nil, layers.Launch)
 	} else {
 		ctx.Logf("Handling functions without dependency on functions-framework.")
-		if err := installFramework(ctx, l); err != nil {
-			return fmt.Errorf("installing framework: %v", err)
-		}
+
+		// The pip install is performed by the pip buildpack; see python.InstallRequirements.
+		ctx.Debugf("Adding functions-framework requirements.txt to the list of requirements files to install.")
+		r := filepath.Join(ctx.BuildpackRoot(), "converter", "requirements.txt")
+		l.BuildEnvironment.Append(python.RequirementsFilesEnv, string(os.PathListSeparator)+r)
 	}
 
 	ctx.SetFunctionsEnvVars(l)
@@ -94,29 +88,11 @@ func validateSource(ctx *gcp.Context) error {
 			return gcp.UserErrorf("missing main.py and %s not specified. Either create the function in main.py or specify %s to point to the file that contains the function", env.FunctionSource, env.FunctionSource)
 		}
 	} else if !ctx.FileExists(fnSource) {
-		return gcp.UserErrorf("%s specified file '%s' but it does not exist", env.FunctionSource, fnSource)
+		return gcp.UserErrorf("%s specified file %q but it does not exist", env.FunctionSource, fnSource)
 	}
 	return nil
 }
 
 func containsFF(s string) bool {
 	return ffRegexp.MatchString(s) || eggRegexp.MatchString(s)
-}
-
-func installFramework(ctx *gcp.Context, l *layers.Layer) error {
-	cvt := filepath.Join(ctx.BuildpackRoot(), "converter")
-	req := filepath.Join(cvt, "requirements.txt")
-	cached, meta, err := python.CheckCache(ctx, l, cache.WithFiles(req))
-	if err != nil {
-		return fmt.Errorf("checking cache: %w", err)
-	}
-	if cached {
-		ctx.CacheHit(layerName)
-	} else {
-		ctx.CacheMiss(layerName)
-		ctx.Exec([]string{"python3", "-m", "pip", "install", "--upgrade", "-t", l.Root, "-r", req}, gcp.WithUserAttribution)
-	}
-	ctx.PrependPathSharedEnv(l, "PYTHONPATH", l.Root)
-	ctx.WriteMetadata(l, &meta, layers.Build, layers.Cache, layers.Launch)
-	return nil
 }

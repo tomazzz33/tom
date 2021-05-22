@@ -23,7 +23,6 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/cache"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/nodejs"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -34,32 +33,32 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if !ctx.FileExists(nodejs.YarnLock) {
-		ctx.OptOut("yarn.lock not found.")
+		return gcp.OptOutFileNotFound("yarn.lock"), nil
 	}
 	if !ctx.FileExists("package.json") {
-		ctx.OptOut("package.json not found.")
+		return gcp.OptOutFileNotFound("package.json"), nil
 	}
 
 	p, err := nodejs.ReadPackageJSON(ctx.ApplicationRoot())
 	if err != nil {
-		return fmt.Errorf("reading package.json: %w", err)
+		return nil, fmt.Errorf("reading package.json: %w", err)
 	}
 	if p.Scripts.GCPBuild == "" {
-		ctx.OptOut("gcp-build script not found in package.json.")
+		return gcp.OptOut("gcp-build script not found in package.json"), nil
 	}
 
-	return nil
+	return gcp.OptIn("found yarn.lock and package.json with a gcp-build script"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer("yarn")
-	nm := filepath.Join(l.Root, "node_modules")
+	l := ctx.Layer("yarn", gcp.CacheLayer)
+	nm := filepath.Join(l.Path, "node_modules")
 	ctx.RemoveAll("node_modules")
 
 	nodeEnv := nodejs.EnvDevelopment
-	cached, meta, err := nodejs.CheckCache(ctx, l, cache.WithStrings(nodeEnv), cache.WithFiles("package.json", nodejs.YarnLock))
+	cached, err := nodejs.CheckCache(ctx, l, cache.WithStrings(nodeEnv), cache.WithFiles("package.json", nodejs.YarnLock))
 	if err != nil {
 		return fmt.Errorf("checking cache: %w", err)
 	}
@@ -86,6 +85,5 @@ func buildFn(ctx *gcp.Context) error {
 
 	ctx.Exec([]string{"yarn", "run", "gcp-build"}, gcp.WithUserAttribution)
 	ctx.RemoveAll("node_modules")
-	ctx.WriteMetadata(l, &meta, layers.Cache)
 	return nil
 }

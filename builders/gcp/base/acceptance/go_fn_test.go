@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -39,7 +39,7 @@ func TestAcceptanceGoFn(t *testing.T) {
 		},
 		{
 			Name:       "function without framework",
-			App:        "no_framework",
+			App:        "no_framework_go_sum",
 			Path:       "/Func",
 			Env:        []string{"GOOGLE_FUNCTION_TARGET=Func"},
 			MustUse:    []string{goRuntime, goFF, goBuild},
@@ -56,7 +56,7 @@ func TestAcceptanceGoFn(t *testing.T) {
 		},
 		{
 			Name:       "function with framework",
-			App:        "with_framework",
+			App:        "with_framework_go_sum",
 			Path:       "/Func",
 			Env:        []string{"GOOGLE_FUNCTION_TARGET=Func"},
 			MustUse:    []string{goRuntime, goFF, goBuild},

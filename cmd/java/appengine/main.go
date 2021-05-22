@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/appengine"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/appstart"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/java"
 )
@@ -28,18 +29,20 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	// Always opt-in.
-	return nil
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	return gcp.OptInAlways(), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
 	return appengine.Build(ctx, "java", entrypoint)
 }
 
-func entrypoint(ctx *gcp.Context) (*appengine.Entrypoint, error) {
+func entrypoint(ctx *gcp.Context) (*appstart.Entrypoint, error) {
 	if ctx.FileExists("WEB-INF", "appengine-web.xml") {
-		return nil, gcp.UserErrorf("appengine-web.xml found, GAE Java compat apps are not supported on Java 11")
+		return &appstart.Entrypoint{
+			Type:    appstart.EntrypointGenerated.String(),
+			Command: "serve WEB-INF/appengine-web.xml",
+		}, nil
 	}
 
 	executable, err := java.ExecutableJar(ctx)
@@ -47,8 +50,8 @@ func entrypoint(ctx *gcp.Context) (*appengine.Entrypoint, error) {
 		return nil, fmt.Errorf("finding executable jar: %w", err)
 	}
 
-	return &appengine.Entrypoint{
-		Type:    appengine.EntrypointGenerated.String(),
-		Command: "/serve " + executable,
+	return &appstart.Entrypoint{
+		Type:    appstart.EntrypointGenerated.String(),
+		Command: "serve " + executable,
 	}, nil
 }

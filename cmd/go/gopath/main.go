@@ -18,28 +18,26 @@ package main
 
 import (
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if ctx.FileExists("go.mod") {
-		ctx.OptOut("go.mod file found")
+		return gcp.OptOut("go.mod found"), nil
 	}
-	return nil
+	return gcp.OptIn("go.mod file not found, assuming GOPATH build"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer("gopath")
-	ctx.OverrideBuildEnv(l, "GOPATH", l.Root)
-	ctx.OverrideBuildEnv(l, "GO111MODULE", "off")
-	ctx.WriteMetadata(l, nil, layers.Build)
+	l := ctx.Layer("gopath", gcp.BuildLayer, gcp.LaunchLayerIfDevMode)
+	l.SharedEnvironment.Override("GOPATH", l.Path)
+	l.SharedEnvironment.Override("GO111MODULE", "off")
 
 	// TODO(b/145604612): Investigate caching the modules layer.
 
-	ctx.Exec([]string{"go", "get", "-d"}, gcp.WithEnv("GOPATH="+l.Root, "GO111MODULE=off"), gcp.WithUserAttribution)
+	ctx.Exec([]string{"go", "get", "-d"}, gcp.WithEnv("GOPATH="+l.Path, "GO111MODULE=off"), gcp.WithUserAttribution)
 	return nil
 }

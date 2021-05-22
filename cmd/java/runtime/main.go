@@ -21,42 +21,50 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/runtime"
-	"github.com/buildpack/libbuildpack/buildpackplan"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
 	javaLayer             = "java"
 	javaVersionURL        = "https://api.adoptopenjdk.net/v3/assets/feature_releases/%s/ga?architecture=x64&heap_size=normal&image_type=jdk&jvm_impl=hotspot&os=linux&page=0&page_size=1&project=jdk&sort_order=DESC&vendor=adoptopenjdk"
 	defaultFeatureVersion = "11"
+	versionKey            = "version"
 )
-
-// metadata represents metadata stored for a runtime layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	runtime.CheckOverride(ctx, "java")
-
-	if ctx.FileExists("pom.xml") ||
-		ctx.FileExists("build.gradle") ||
-		ctx.FileExists("build.gradle.kts") ||
-		ctx.FileExists("META-INF/MANIFEST.MF") ||
-		len(ctx.Glob("*.java")) > 0 ||
-		len(ctx.Glob("*.jar")) > 0 {
-		return nil
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if result := runtime.CheckOverride(ctx, "java"); result != nil {
+		return result, nil
 	}
-	ctx.OptOut("None of the following found: pom.xml, build.gradle, build.gradle.kts, META-INF/MANIFEST.MF, *.java, *.jar.")
-	return nil
+
+	files := []string{
+		"pom.xml",
+		".mvn/extensions.xml",
+		"build.gradle",
+		"build.gradle.kts",
+		"META-INF/MANIFEST.MF",
+	}
+	for _, f := range files {
+		if ctx.FileExists(f) {
+			return gcp.OptInFileFound(f), nil
+		}
+	}
+
+	if len(ctx.Glob("*.java")) > 0 {
+		return gcp.OptIn("found .java files"), nil
+	}
+	if len(ctx.Glob("*.jar")) > 0 {
+		return gcp.OptIn("found .jar files"), nil
+	}
+	return gcp.OptOut(fmt.Sprintf("none of the following found: %s, *.java, *.jar", strings.Join(files, ", "))), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -73,7 +81,7 @@ func buildFn(ctx *gcp.Context) error {
 		return gcp.UserErrorf("Java feature version %s does not exist at %s (status %d). You can specify the feature version with %s. See available feature runtime versions at https://api.adoptopenjdk.net/v3/info/available_releases", featureVersion, releaseURL, code, env.RuntimeVersion)
 	}
 
-	result := ctx.Exec([]string{"curl", "--silent", releaseURL}, gcp.WithUserAttribution)
+	result := ctx.Exec([]string{"curl", "--fail", "--show-error", "--silent", "--location", releaseURL}, gcp.WithUserAttribution)
 	release, err := parseVersionJSON(result.Stdout)
 	if err != nil {
 		return fmt.Errorf("parsing JSON returned by %s: %w", releaseURL, err)
@@ -85,10 +93,9 @@ func buildFn(ctx *gcp.Context) error {
 	}
 
 	// Check the metadata in the cache layer to determine if we need to proceed.
-	var meta metadata
-	l := ctx.Layer(javaLayer)
-	ctx.ReadMetadata(l, &meta)
-	if version == meta.Version {
+	l := ctx.Layer(javaLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
+	metaVersion := ctx.GetMetadata(l, versionKey)
+	if version == metaVersion {
 		ctx.CacheHit(javaLayer)
 		return nil
 	}
@@ -98,15 +105,13 @@ func buildFn(ctx *gcp.Context) error {
 	// Download and install Java in layer.
 	ctx.Logf("Installing Java v%s", version)
 
-	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, l.Root)
+	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, l.Path)
 	ctx.Exec([]string{"bash", "-c", command}, gcp.WithUserAttribution)
 
-	meta.Version = version
-	ctx.WriteMetadata(l, meta, layers.Build, layers.Cache, layers.Launch)
-
-	ctx.AddBuildpackPlan(buildpackplan.Plan{
-		Name:    javaLayer,
-		Version: version,
+	ctx.SetMetadata(l, versionKey, version)
+	ctx.AddBuildpackPlanEntry(libcnb.BuildpackPlanEntry{
+		Name:     javaLayer,
+		Metadata: map[string]interface{}{"version": version},
 	})
 	return nil
 }
@@ -131,7 +136,7 @@ type javaRelease struct {
 	Binaries    []binary    `json:"binaries"`
 }
 
-// parseVersionJSON parses a JSON array of version infomation
+// parseVersionJSON parses a JSON array of version information
 func parseVersionJSON(jsonStr string) (javaRelease, error) {
 	var releases []javaRelease
 	if err := json.Unmarshal([]byte(jsonStr), &releases); err != nil {

@@ -25,32 +25,29 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/devmode"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/nodejs"
-	"github.com/buildpack/libbuildpack/buildpackplan"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
-	cacheTag = "prod dependencies"
-	yarnURL  = "https://github.com/yarnpkg/yarn/releases/download/v%[1]s/yarn-v%[1]s.tar.gz"
+	cacheTag    = "prod dependencies"
+	yarnVersion = "1.22.5"
+	yarnURL     = "https://github.com/yarnpkg/yarn/releases/download/v%[1]s/yarn-v%[1]s.tar.gz"
+	versionKey  = "version"
 )
-
-// metadata represents metadata stored for a yarn layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if !ctx.FileExists(nodejs.YarnLock) {
-		ctx.OptOut("yarn.lock not found.")
+		return gcp.OptOutFileNotFound("yarn.lock"), nil
 	}
 	if !ctx.FileExists("package.json") {
-		ctx.OptOut("package.json not found.")
+		return gcp.OptOutFileNotFound("package.json"), nil
 	}
-	return nil
+
+	return gcp.OptIn("found yarn.lock and package.json"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -58,12 +55,12 @@ func buildFn(ctx *gcp.Context) error {
 		return fmt.Errorf("installing Yarn: %w", err)
 	}
 
-	ml := ctx.Layer("yarn")
-	nm := filepath.Join(ml.Root, "node_modules")
+	ml := ctx.Layer("yarn", gcp.BuildLayer, gcp.CacheLayer)
+	nm := filepath.Join(ml.Path, "node_modules")
 	ctx.RemoveAll("node_modules")
 
 	nodeEnv := nodejs.NodeEnv()
-	cached, meta, err := nodejs.CheckCache(ctx, ml, cache.WithStrings(nodeEnv), cache.WithFiles("package.json", nodejs.YarnLock))
+	cached, err := nodejs.CheckCache(ctx, ml, cache.WithStrings(nodeEnv), cache.WithFiles("package.json", nodejs.YarnLock))
 	if err != nil {
 		return fmt.Errorf("checking cache: %w", err)
 	}
@@ -91,12 +88,9 @@ func buildFn(ctx *gcp.Context) error {
 		ctx.Exec([]string{"cp", "--archive", "node_modules", nm}, gcp.WithUserTimingAttribution)
 	}
 
-	ctx.WriteMetadata(ml, &meta, layers.Build, layers.Cache)
-
-	el := ctx.Layer("env")
-	ctx.PrependPathSharedEnv(el, "PATH", filepath.Join(ctx.ApplicationRoot(), "node_modules", ".bin"))
-	ctx.DefaultSharedEnv(el, "NODE_ENV", nodeEnv)
-	ctx.WriteMetadata(el, nil, layers.Launch, layers.Build)
+	el := ctx.Layer("env", gcp.BuildLayer, gcp.LaunchLayer)
+	el.SharedEnvironment.PrependPath("PATH", filepath.Join(ctx.ApplicationRoot(), "node_modules", ".bin"))
+	el.SharedEnvironment.Default("NODE_ENV", nodeEnv)
 
 	// Configure the entrypoint for production.
 	cmd = []string{"yarn", "run", "start"}
@@ -123,19 +117,12 @@ func installYarn(ctx *gcp.Context) error {
 		return nil
 	}
 
-	// Use semver.io to determine the latest available version of Yarn.
-	ctx.Logf("Finding latest stable version of Yarn.")
-	result := ctx.Exec([]string{"curl", "--silent", "--get", "http://semver.io/yarn/stable"}, gcp.WithUserAttribution)
-	version := result.Stdout
-	ctx.Logf("The latest stable version of Yarn is v%s", version)
-
 	yarnLayer := "yarn_install"
-	yrl := ctx.Layer(yarnLayer)
+	yrl := ctx.Layer(yarnLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
 
 	// Check the metadata in the cache layer to determine if we need to proceed.
-	var meta metadata
-	ctx.ReadMetadata(yrl, &meta)
-	if version == meta.Version {
+	metaVersion := ctx.GetMetadata(yrl, versionKey)
+	if yarnVersion == metaVersion {
 		ctx.CacheHit(yarnLayer)
 		ctx.Logf("Yarn cache hit, skipping installation.")
 	} else {
@@ -143,20 +130,18 @@ func installYarn(ctx *gcp.Context) error {
 		ctx.ClearLayer(yrl)
 
 		// Download and install yarn in layer.
-		ctx.Logf("Installing Yarn v%s", version)
-		archiveURL := fmt.Sprintf(yarnURL, version)
-		command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, yrl.Root)
+		ctx.Logf("Installing Yarn v%s", yarnVersion)
+		archiveURL := fmt.Sprintf(yarnURL, yarnVersion)
+		command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s --strip-components=1", archiveURL, yrl.Path)
 		ctx.Exec([]string{"bash", "-c", command}, gcp.WithUserAttribution)
 	}
 
 	// Store layer flags and metadata.
-	meta.Version = version
-	ctx.WriteMetadata(yrl, meta, layers.Build, layers.Cache, layers.Launch)
-	ctx.Setenv("PATH", filepath.Join(yrl.Root, "bin")+":"+os.Getenv("PATH"))
-
-	ctx.AddBuildpackPlan(buildpackplan.Plan{
-		Name:    yarnLayer,
-		Version: version,
+	ctx.SetMetadata(yrl, versionKey, yarnVersion)
+	ctx.Setenv("PATH", filepath.Join(yrl.Path, "bin")+":"+os.Getenv("PATH"))
+	ctx.AddBuildpackPlanEntry(libcnb.BuildpackPlanEntry{
+		Name:     yarnLayer,
+		Metadata: map[string]interface{}{"version": yarnVersion},
 	})
 	return nil
 }

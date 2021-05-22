@@ -8,8 +8,10 @@ go_library(
     name = "gcpbuildpack",
     srcs = [
         "builderoutput.go",
+        "detect.go",
         "env.go",
         "exec.go",
+        "exit.go",
         "filepath.go",
         "gcpbuildpack.go",
         "ioutil.go",
@@ -21,12 +23,7 @@ go_library(
     importpath = "github.com/GoogleCloudPlatform/buildpacks/" + package_name(),
     deps = [
         "//pkg/env",
-        "@com_github_buildpack_libbuildpack//build:go_default_library",
-        "@com_github_buildpack_libbuildpack//buildpack:go_default_library",
-        "@com_github_buildpack_libbuildpack//buildpackplan:go_default_library",
-        "@com_github_buildpack_libbuildpack//buildplan:go_default_library",
-        "@com_github_buildpack_libbuildpack//detect:go_default_library",
-        "@com_github_buildpack_libbuildpack//layers:go_default_library",
+        "@com_github_buildpacks_libcnb//:go_default_library",
     ],
 )
 
@@ -35,6 +32,7 @@ go_test(
     size = "small",
     srcs = [
         "builderoutput_test.go",
+        "detect_test.go",
         "exec_test.go",
         "gcpbuildpack_test.go",
         "span_test.go",
@@ -43,7 +41,6 @@ go_test(
     rundir = ".",
     deps = [
         "//pkg/env",
-        "@com_github_buildpack_libbuildpack//buildpack:go_default_library",
-        "@com_github_buildpack_libbuildpack//layers:go_default_library",
+        "@com_github_buildpacks_libcnb//:go_default_library",
     ],
 )

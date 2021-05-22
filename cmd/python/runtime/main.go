@@ -26,8 +26,7 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/runtime"
-	"github.com/buildpack/libbuildpack/buildpackplan"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
@@ -36,24 +35,22 @@ const (
 	// TODO(b/148375706): Add mapping for stable/beta versions.
 	versionURL  = "https://storage.googleapis.com/gcp-buildpacks/python/latest.version"
 	versionFile = ".python-version"
+	versionKey  = "version"
 )
-
-// metadata represents metadata stored for a runtime layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	runtime.CheckOverride(ctx, "python")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if result := runtime.CheckOverride(ctx, "python"); result != nil {
+		return result, nil
+	}
 
 	if !ctx.HasAtLeastOne("*.py") {
-		ctx.OptOut("No *.py files found.")
+		return gcp.OptOut("no .py files found"), nil
 	}
-	return nil
+	return gcp.OptIn("found .py files"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -61,11 +58,12 @@ func buildFn(ctx *gcp.Context) error {
 	if err != nil {
 		return fmt.Errorf("determining runtime version: %w", err)
 	}
+
+	l := ctx.Layer(pythonLayer, gcp.BuildLayer, gcp.CacheLayer, gcp.LaunchLayer)
+
 	// Check the metadata in the cache layer to determine if we need to proceed.
-	var meta metadata
-	l := ctx.Layer(pythonLayer)
-	ctx.ReadMetadata(l, &meta)
-	if version == meta.Version {
+	metaVersion := ctx.GetMetadata(l, versionKey)
+	if version == metaVersion {
 		ctx.CacheHit(pythonLayer)
 		return nil
 	}
@@ -78,22 +76,20 @@ func buildFn(ctx *gcp.Context) error {
 	}
 
 	ctx.Logf("Installing Python v%s", version)
-	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s", archiveURL, l.Root)
+	command := fmt.Sprintf("curl --fail --show-error --silent --location --retry 3 %s | tar xz --directory %s", archiveURL, l.Path)
 	ctx.Exec([]string{"bash", "-c", command})
 
 	ctx.Logf("Upgrading pip to the latest version and installing build tools")
-	path := filepath.Join(l.Root, "bin/python3")
+	path := filepath.Join(l.Path, "bin/python3")
 	ctx.Exec([]string{path, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"}, gcp.WithUserAttribution)
 
 	// Force stdout/stderr streams to be unbuffered so that log messages appear immediately in the logs.
-	ctx.DefaultLaunchEnv(l, "PYTHONUNBUFFERED", "TRUE")
+	l.LaunchEnvironment.Default("PYTHONUNBUFFERED", "TRUE")
 
-	meta.Version = version
-	ctx.WriteMetadata(l, meta, layers.Build, layers.Cache, layers.Launch)
-
-	ctx.AddBuildpackPlan(buildpackplan.Plan{
-		Name:    pythonLayer,
-		Version: version,
+	ctx.SetMetadata(l, versionKey, version)
+	ctx.AddBuildpackPlanEntry(libcnb.BuildpackPlanEntry{
+		Name:     pythonLayer,
+		Metadata: map[string]interface{}{"version": version},
 	})
 
 	return nil
@@ -113,7 +109,8 @@ func runtimeVersion(ctx *gcp.Context) (string, error) {
 		}
 		return "", gcp.UserErrorf("%s exists but does not specify a version", versionFile)
 	}
-	v := ctx.Exec([]string{"curl", "--silent", versionURL}).Stdout
+	// Intentionally no user-attributed becase the URL is provided by Google.
+	v := ctx.Exec([]string{"curl", "--fail", "--show-error", "--silent", "--location", versionURL}).Stdout
 	ctx.Logf("Using latest runtime version: %s", v)
 	return v, nil
 }

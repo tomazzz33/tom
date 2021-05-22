@@ -22,6 +22,7 @@ import (
 )
 
 const (
+
 	// Runtime is an env var used constrain autodetection in runtime buildpacks or to set runtime name in App Engine buildpacks.
 	// Runtime must be respected by each runtime buildpack.
 	// Example: `nodejs` will cause the nodejs/runtime buildpack to opt-in.
@@ -32,7 +33,7 @@ const (
 	// Example: `13.7.0` for Node.js, `1.14.1` for Go.
 	RuntimeVersion = "GOOGLE_RUNTIME_VERSION"
 
-	// DebugMode enables more verbose logging. The value is unused; only the presense of the env var is required to enable.
+	// DebugMode enables more verbose logging. The value is unused; only the presence of the env var is required to enable.
 	DebugMode = "GOOGLE_DEBUG"
 
 	// DevMode is an env var used to enable development mode in buildpacks.
@@ -62,6 +63,10 @@ const (
 	// Behavior: In Go, the value is cleaned up and passed on to subsequent buildpacks as GOOGLE_BUILDABLE.
 	GAEMain = "GAE_YAML_MAIN"
 
+	// AppEngineAPIs is an env var that enables access to App Engine APIs. Set to TRUE to enable.
+	// Example: `true`, `True`, `1` will enable API access.
+	AppEngineAPIs = "GAE_APP_ENGINE_APIS"
+
 	// FunctionTarget is an env var used to specify function name.
 	// FunctionTarget must be respected by all functions-framework buildpacks.
 	// Example: `helloWorld` or any exported function name.
@@ -89,6 +94,13 @@ const (
 	// GoLDFlags is an env var used to pass through linker flags to the Go linker.
 	// Example: `-s -w` is sometimes used to strip and reduce binary size.
 	GoLDFlags = "GOOGLE_GOLDFLAGS"
+
+	// LabelPrefix is a prefix for values that will be added to the final
+	// built user container. The prefix is stripped and the remainder forms the
+	// label key. For example, "GOOGLE_LABEL_ABC=Some-Value" will result in a
+	// label on the final container of "abc=Some-Value". The label key itself is
+	// lowercased, underscores changed to dashes, and is prefixed with "google.".
+	LabelPrefix = "GOOGLE_LABEL_"
 )
 
 // IsDebugMode returns true if the buildpack debug mode is enabled.
@@ -101,5 +113,20 @@ func IsDebugMode() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("parsing %s: %v", DebugMode, err)
 	}
+	return parsed, nil
+}
+
+// IsDevMode indicates that the builder is running in Development mode.
+func IsDevMode() (bool, error) {
+	devMode, present := os.LookupEnv(DevMode)
+	if !present {
+		return false, nil
+	}
+
+	parsed, err := strconv.ParseBool(devMode)
+	if err != nil {
+		return false, fmt.Errorf("parsing %s: %v", DevMode, err)
+	}
+
 	return parsed, nil
 }

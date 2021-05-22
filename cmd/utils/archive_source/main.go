@@ -17,10 +17,13 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -31,20 +34,29 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	return nil
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	// Fail archiving source when users want to clear source from the final container.
+	if cs, ok := os.LookupEnv(env.ClearSource); ok {
+		c, err := strconv.ParseBool(cs)
+		if err != nil {
+			return nil, gcp.UserErrorf("failed to parse %s to determine compatibility with this buildpack: %v", env.ClearSource, err)
+		} else if c {
+			return gcp.OptOut(fmt.Sprintf("%s is incompatible with archive source", env.ClearSource)), nil
+		}
+	}
+	return gcp.OptInAlways(), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	sl := ctx.Layer("src")
-	sp := filepath.Join(sl.Root, archiveName)
+	sl := ctx.Layer("src", gcp.LaunchLayer)
+	sp := filepath.Join(sl.Path, archiveName)
 	archiveSource(ctx, sp, ctx.ApplicationRoot())
 
-	// Symlink the archive to /workspace/.googlebuild for a stable path.
+	// Symlink the archive to /workspace/.googlebuild for a stable path; add LABEL to container.
 	ctx.MkdirAll(".googlebuild", 0755)
-	ctx.Symlink(sp, filepath.Join(ctx.ApplicationRoot(), ".googlebuild", archiveName))
-
-	ctx.WriteMetadata(sl, nil, layers.Launch)
+	stable := filepath.Join(ctx.ApplicationRoot(), ".googlebuild", archiveName)
+	ctx.Symlink(sp, stable)
+	ctx.AddLabel("source-archive", stable)
 
 	return nil
 }

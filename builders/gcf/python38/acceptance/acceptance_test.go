@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -29,8 +29,9 @@ func TestAcceptance(t *testing.T) {
 
 	testCases := []acceptance.Test{
 		{
-			Name: "function without framework",
-			App:  "without_framework",
+			Name:          "function without framework",
+			App:           "without_framework",
+			MustNotOutput: []string{`WARNING: You are using pip version`},
 		},
 		{
 			Name: "function with dependencies",
@@ -39,6 +40,10 @@ func TestAcceptance(t *testing.T) {
 		{
 			Name: "function with framework",
 			App:  "with_framework",
+		},
+		{
+			Name: "function with framework and dependency bin",
+			App:  "with_framework_bin_conflict",
 		},
 		{
 			Name:   "function with runtime env var",
@@ -79,7 +84,7 @@ func TestFailures(t *testing.T) {
 		{
 			App:       "fail_broken_dependencies",
 			Env:       []string{"GOOGLE_FUNCTION_TARGET=testFunction", "GOOGLE_RUNTIME=python38"},
-			MustMatch: `functions-framework .* has requirement flask<2\.0,>=1\.0, but you have flask 0\.1\.`,
+			MustMatch: `functions-framework .* has requirement flask<2\.0,>=1\.0, but you have flask 0\.12\.5`,
 		},
 	}
 

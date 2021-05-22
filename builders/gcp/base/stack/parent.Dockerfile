@@ -18,16 +18,16 @@ ARG cnb_uid=1000
 ARG cnb_gid=1000
 ARG stack_id="google"
 
-# Required by python/runtime.
+# Required by python/runtime: libexpat1, libffi6, libmpdecc2.
+# Required by dotnet/runtime: libicu60
+# Required by go/runtime: tzdata (Go may panic without /usr/share/zoneinfo)
 RUN apt-get update && apt-get install -y --no-install-recommends \
   libexpat1 \
   libffi6 \
   libmpdec2 \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Required by dotnet/runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends \
   libicu60 \
+  libc++1-9 \
+  tzdata \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 LABEL io.buildpacks.stack.id=${stack_id}

@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -96,6 +96,12 @@ func TestAcceptanceJava(t *testing.T) {
 			MustRebuildOnChange: "/workspace/src/main/java/example/HelloController.java",
 		},
 		{
+			Name:       "polyglot maven",
+			App:        "java/polyglot-maven",
+			MustUse:    []string{javaMaven, javaRuntime, javaEntrypoint},
+			MustNotUse: []string{entrypoint},
+		},
+		{
 			Name:       "Maven build args",
 			App:        "java/maven_testing_profile",
 			Env:        []string{"GOOGLE_BUILD_ARGS=-Dnative=false"},
@@ -135,6 +141,8 @@ func TestAcceptanceJava(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		tc := tc
+		tc.FlakyBuildAttempts = 3
+
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
 

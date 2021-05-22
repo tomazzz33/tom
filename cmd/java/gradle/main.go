@@ -17,7 +17,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,41 +28,34 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/java"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
-	gradleVersionURL = "https://services.gradle.org/versions/current"
-	gradleLayer      = "gradle"
-	cacheLayer       = "cache"
+	gradleVersion   = "6.5.1"
+	gradleDistroURL = "https://services.gradle.org/distributions/gradle-%s-bin.zip"
+	gradleLayer     = "gradle"
+	cacheLayer      = "cache"
+	versionKey      = "version"
 )
-
-// gradleMetadata represents metadata stored for a gradle layer.
-type gradleMetadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
-	if !ctx.FileExists("build.gradle") && !ctx.FileExists("build.gradle.kts") {
-		ctx.OptOut("Neither build.gradle nor build.gradle.kts found.")
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
+	if ctx.FileExists("build.gradle") {
+		return gcp.OptInFileFound("build.gradle"), nil
 	}
-	return nil
+	if ctx.FileExists("build.gradle.kts") {
+		return gcp.OptInFileFound("build.gradle.kts"), nil
+	}
+	return gcp.OptOut("neither build.gradle nor build.gradle.kts found"), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	var repoMeta java.RepoMetadata
-	gradleCachedRepo := ctx.Layer(cacheLayer)
-	ctx.ReadMetadata(gradleCachedRepo, &repoMeta)
-	java.CheckCacheExpiration(ctx, &repoMeta, gradleCachedRepo)
-	lf := []layers.Flag{layers.Cache}
-	if devmode.Enabled(ctx) {
-		lf = append(lf, layers.Launch)
-	}
-	ctx.WriteMetadata(gradleCachedRepo, &repoMeta, lf...)
+	gradleCachedRepo := ctx.Layer(cacheLayer, gcp.CacheLayer, gcp.LaunchLayerIfDevMode)
+
+	java.CheckCacheExpiration(ctx, gradleCachedRepo)
 
 	usr, err := user.Current()
 	if err != nil {
@@ -74,7 +66,7 @@ func buildFn(ctx *gcp.Context) error {
 	// Symlink the gradle-cache layer into ~/.gradle. If ~/.gradle already exists, delete it first.
 	// If it exists as a symlink, RemoveAll will remove the link, not anything it's linked to.
 	ctx.RemoveAll(homeGradle)
-	ctx.Symlink(gradleCachedRepo.Root, homeGradle)
+	ctx.Symlink(gradleCachedRepo.Path, homeGradle)
 
 	var gradle string
 	if ctx.FileExists("gradlew") {
@@ -105,7 +97,7 @@ func buildFn(ctx *gcp.Context) error {
 
 	// Store the build steps in a script to be run on each file change.
 	if devmode.Enabled(ctx) {
-		devmode.WriteBuildScript(ctx, gradleCachedRepo.Root, "~/.gradle", command)
+		devmode.WriteBuildScript(ctx, gradleCachedRepo.Path, "~/.gradle", command)
 	}
 
 	return nil
@@ -116,36 +108,25 @@ func gradleInstalled(ctx *gcp.Context) bool {
 	return result.Stdout != ""
 }
 
-type gradleVersion struct {
-	Version     string `json:"version"`
-	DownloadURL string `json:"downloadUrl"`
-}
-
 // installGradle installs Gradle and returns the path of the gradle binary
 func installGradle(ctx *gcp.Context) (string, error) {
-	gradlel := ctx.Layer(gradleLayer)
+	gradlel := ctx.Layer(gradleLayer, gcp.CacheLayer, gcp.BuildLayer, gcp.LaunchLayerIfDevMode)
 
+	metaVersion := ctx.GetMetadata(gradlel, versionKey)
 	// Check the metadata in the cache layer to determine if we need to proceed.
-	var meta gradleMetadata
-	ctx.ReadMetadata(gradlel, &meta)
-
-	version, downloadURL, err := fetchGradleVersion(ctx)
-	if err != nil {
-		return "", fmt.Errorf("fetching latest Gradle version: %w", err)
-	}
-
-	if version == meta.Version {
+	if gradleVersion == metaVersion {
 		ctx.CacheHit(gradleLayer)
 		ctx.Logf("Gradle cache hit, skipping installation.")
-		return filepath.Join(gradlel.Root, "bin", "gradle"), nil
+		return filepath.Join(gradlel.Path, "bin", "gradle"), nil
 	}
 	ctx.CacheMiss(gradleLayer)
 	ctx.ClearLayer(gradlel)
 
+	downloadURL := fmt.Sprintf(gradleDistroURL, gradleVersion)
 	// Download and install gradle in layer.
-	ctx.Logf("Installing Gradle v%s", version)
+	ctx.Logf("Installing Gradle v%s", gradleVersion)
 	if code := ctx.HTTPStatus(downloadURL); code != http.StatusOK {
-		return "", fmt.Errorf("Gradle version %s does not exist at %s (status %d)", version, downloadURL, code)
+		return "", fmt.Errorf("Gradle version %s does not exist at %s (status %d)", gradleVersion, downloadURL, code)
 	}
 
 	tmpDir := "/tmp"
@@ -158,26 +139,11 @@ func installGradle(ctx *gcp.Context) (string, error) {
 	unzip := fmt.Sprintf("unzip -q %s -d %s", gradleZip, tmpDir)
 	ctx.Exec([]string{"bash", "-c", unzip}, gcp.WithUserAttribution)
 
-	gradleExtracted := filepath.Join(tmpDir, fmt.Sprintf("gradle-%s", version))
+	gradleExtracted := filepath.Join(tmpDir, fmt.Sprintf("gradle-%s", gradleVersion))
 	defer ctx.RemoveAll(gradleExtracted)
-	install := fmt.Sprintf("mv %s/* %s", gradleExtracted, gradlel.Root)
+	install := fmt.Sprintf("mv %s/* %s", gradleExtracted, gradlel.Path)
 	ctx.Exec([]string{"bash", "-c", install}, gcp.WithUserTimingAttribution)
 
-	meta.Version = version
-	ctx.WriteMetadata(gradlel, meta, layers.Cache)
-	return filepath.Join(gradlel.Root, "bin", "gradle"), nil
-}
-
-// fetchGradleVersion returns the latest gradle version, its downloadURL, and an error in that order.
-func fetchGradleVersion(ctx *gcp.Context) (string, string, error) {
-	if code := ctx.HTTPStatus(gradleVersionURL); code != http.StatusOK {
-		return "", "", fmt.Errorf("Gradle latest version info does not exist at %s (status %d)", gradleVersionURL, code)
-	}
-
-	jsonStr := ctx.Exec([]string{"curl", "--silent", gradleVersionURL}, gcp.WithUserAttribution).Stdout
-	var gv gradleVersion
-	if err := json.Unmarshal([]byte(jsonStr), &gv); err != nil {
-		return "", "", fmt.Errorf("parsing JSON response from URL %q: %v", gradleVersionURL, err)
-	}
-	return gv.Version, gv.DownloadURL, nil
+	ctx.SetMetadata(gradlel, versionKey, gradleVersion)
+	return filepath.Join(gradlel.Path, "bin", "gradle"), nil
 }

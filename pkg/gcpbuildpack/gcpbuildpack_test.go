@@ -25,8 +25,7 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
-	"github.com/buildpack/libbuildpack/buildpack"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 func TestDebugModeInitialized(t *testing.T) {
@@ -67,7 +66,7 @@ func TestDebugModeInitialized(t *testing.T) {
 				}
 			}
 
-			ctx := NewContext(buildpack.Info{ID: "id", Version: "version", Name: "name"})
+			ctx := NewContext(libcnb.BuildpackInfo{ID: "id", Version: "version", Name: "name"})
 			if ctx.debug != tc.want {
 				t.Errorf("ctx.debug=%t, want %t", ctx.debug, tc.want)
 			}
@@ -85,12 +84,11 @@ func TestDetectContextInitialized(t *testing.T) {
 	id := "my-id"
 	version := "my-version"
 	name := "my-name"
-
 	var ctx *Context
-	detect(func(c *Context) error {
+	detect(func(c *Context) (DetectResult, error) {
 		ctx = c
-		return nil
-	})
+		return OptIn("some reason"), nil
+	}, libcnb.WithExitHandler(&fakeExitHandler{}))
 
 	if ctx.BuildpackID() != id {
 		t.Errorf("Unexpected id got=%q want=%q", ctx.BuildpackID(), id)
@@ -108,10 +106,10 @@ func TestDetectEmitsSpan(t *testing.T) {
 	defer cleanUp()
 
 	var ctx *Context
-	detect(func(c *Context) error {
+	detect(func(c *Context) (DetectResult, error) {
 		ctx = c
-		return nil
-	})
+		return OptIn("some reason"), nil
+	}, libcnb.WithExitHandler(&fakeExitHandler{}))
 
 	if len(ctx.stats.spans) != 1 {
 		t.Fatalf("len(spans)=%d want=1", len(ctx.stats.spans))
@@ -132,8 +130,21 @@ func TestDetectEmitsSpan(t *testing.T) {
 	}
 }
 
-// func TestDetectCallbackReturingErrorExits(t *testing.T) {}
-// func TestDetectFinalizes(t *testing.T) {}
+func TestDetectNilResult(t *testing.T) {
+	_, cleanUp := setUpDetectEnvironment(t)
+	defer cleanUp()
+
+	handler := &fakeExitHandler{}
+	// Tests that the function does not panic when both result and error are nil.
+	detect(func(c *Context) (DetectResult, error) {
+		return nil, nil
+	}, libcnb.WithExitHandler(handler))
+
+	// Tests that the function does not panic when both result and error are nil.
+	if want, got := "detect did not return a result or an error", handler.err.Error(); !strings.HasPrefix(got, want) {
+		t.Errorf("ExitHandler.err = %q, want prefix %q", got, want)
+	}
+}
 
 func TestBuildContextInitialized(t *testing.T) {
 	_, cleanUp := setUpBuildEnvironment(t)
@@ -228,41 +239,110 @@ func TestBuildEmitsSuccessOutput(t *testing.T) {
 func TestAddWebProcess(t *testing.T) {
 	testCases := []struct {
 		name    string
-		initial layers.Processes
+		initial []libcnb.Process
 		cmd     []string
-		want    layers.Processes
+		want    []libcnb.Process
 	}{
 		{
 			name:    "empty processes",
-			initial: layers.Processes{},
+			initial: []libcnb.Process{},
 			cmd:     []string{"/web"},
-			want:    layers.Processes{proc("/web", "web")},
+			want:    []libcnb.Process{proc("/web", "web")},
 		},
 		{
 			name:    "existing web",
-			initial: layers.Processes{proc("/dev", "dev"), proc("/web", "web"), proc("/cli", "cli")},
+			initial: []libcnb.Process{proc("/dev", "dev"), proc("/web", "web"), proc("/cli", "cli")},
 			cmd:     []string{"/OVERRIDE"},
-			want:    layers.Processes{proc("/dev", "dev"), proc("/cli", "cli"), proc("/OVERRIDE", "web")},
+			want:    []libcnb.Process{proc("/dev", "dev"), proc("/cli", "cli"), proc("/OVERRIDE", "web")},
 		},
 		{
 			name:    "no web",
-			initial: layers.Processes{proc("/dev", "dev"), proc("/cli", "cli")},
+			initial: []libcnb.Process{proc("/dev", "dev"), proc("/cli", "cli")},
 			cmd:     []string{"/web"},
-			want:    layers.Processes{proc("/dev", "dev"), proc("/cli", "cli"), proc("/web", "web")},
+			want:    []libcnb.Process{proc("/dev", "dev"), proc("/cli", "cli"), proc("/web", "web")},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := NewContext(buildpack.Info{ID: "id", Version: "version", Name: "name"})
-			ctx.processes = tc.initial
+			ctx := NewContext(libcnb.BuildpackInfo{ID: "id", Version: "version", Name: "name"})
+			ctx.buildResult.Processes = tc.initial
 
 			ctx.AddWebProcess(tc.cmd)
 
-			if !reflect.DeepEqual(ctx.processes, tc.want) {
-				t.Errorf("Processes not equal got %#v, want %#v", ctx.processes, tc.want)
+			if !reflect.DeepEqual(ctx.buildResult.Processes, tc.want) {
+				t.Errorf("Processes not equal got %#v, want %#v", ctx.buildResult.Processes, tc.want)
 			}
 		})
+	}
+}
+
+func TestAddLabel(t *testing.T) {
+	testCases := []struct {
+		name      string
+		keyvalues []string
+		value     string
+		want      []libcnb.Label
+	}{
+		{
+			name:      "simple",
+			keyvalues: []string{"my-key=my-value"},
+			want:      []libcnb.Label{{Key: "google.my-key", Value: "my-value"}},
+		},
+		{
+			name:      "uppercase key",
+			keyvalues: []string{"MY-KEY=my-value"},
+			want:      []libcnb.Label{{Key: "google.my-key", Value: "my-value"}},
+		},
+		{
+			name:      "mixed case value",
+			keyvalues: []string{"my-key=My-Value"},
+			want:      []libcnb.Label{{Key: "google.my-key", Value: "My-Value"}},
+		},
+		{
+			name:      "underscore to dash key",
+			keyvalues: []string{"my_key=My-Value"},
+			want:      []libcnb.Label{{Key: "google.my-key", Value: "My-Value"}},
+		},
+		{
+			name:      "multiple",
+			keyvalues: []string{"my-key=My-Value", "my-other-key=my-other-value"},
+			want: []libcnb.Label{
+				{Key: "google.my-key", Value: "My-Value"},
+				{Key: "google.my-other-key", Value: "my-other-value"},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewContext(libcnb.BuildpackInfo{ID: "id", Version: "version", Name: "name"})
+
+			for _, kv := range tc.keyvalues {
+				parts := strings.SplitN(kv, "=", 2)
+				if len(parts) != 2 {
+					t.Fatalf("incorrect format %q, expect key=value", kv)
+				}
+				ctx.AddLabel(parts[0], parts[1])
+			}
+
+			if !reflect.DeepEqual(ctx.buildResult.Labels, tc.want) {
+				t.Errorf("Labels not equal got %#v, want %#v", ctx.buildResult.Labels, tc.want)
+			}
+		})
+	}
+}
+
+func TestAddLabelErrors(t *testing.T) {
+	invalids := []string{"", "0", "00invalid", "abc def", "abd@def", "  abc", "def  ", "a__b"}
+
+	for _, invalid := range invalids {
+		ctx := NewContext(libcnb.BuildpackInfo{ID: "id", Version: "version", Name: "name"})
+		ctx.AddLabel(invalid, "some-value")
+
+		if len(ctx.buildResult.Labels) > 0 {
+			t.Errorf("invalid label %q was incorrectly included", invalid)
+		}
 	}
 }
 
@@ -316,7 +396,7 @@ func TestHasAtLeastOne(t *testing.T) {
 			dir, cleanup := tempWorkingDir(t)
 			defer cleanup()
 
-			ctx := NewContextForTests(buildpack.Info{ID: "id", Version: "version", Name: "name"}, dir)
+			ctx := NewContextForTests(libcnb.BuildpackInfo{ID: "id", Version: "version", Name: "name"}, dir)
 			for _, f := range tc.files {
 				ctx.MkdirAll(tc.prefix, 0777)
 				_, err := ioutil.TempFile(tc.prefix, f)
@@ -333,6 +413,6 @@ func TestHasAtLeastOne(t *testing.T) {
 	}
 }
 
-func proc(command, commandType string) layers.Process {
-	return layers.Process{Command: command, Type: commandType, Direct: true}
+func proc(command, commandType string) libcnb.Process {
+	return libcnb.Process{Command: command, Type: commandType, Direct: true}
 }

@@ -1,6 +1,17 @@
 # Defines a set of groups for builders that support particular language runtimes
 licenses(["notice"])
 
+exports_files(
+    ["testdata"],
+)
+
+package_group(
+    name = "cpp_builders",
+    packages = [
+        "//builders/gcp/base",
+    ],
+)
+
 package_group(
     name = "dotnet_builders",
     packages = [
@@ -17,7 +28,10 @@ package_group(
         "//builders/gae/go112",
         "//builders/gae/go113",
         "//builders/gae/go114",
+        "//builders/gae/go115",
+        "//builders/gae/go116",
         "//builders/gcf/go113",
+        "//builders/gcf/go116",
         "//builders/gcp/base",
     ],
 )
@@ -39,6 +53,7 @@ package_group(
         "//builders/gae/nodejs14",
         "//builders/gcf/nodejs10",
         "//builders/gcf/nodejs12",
+        "//builders/gcf/nodejs14",
         "//builders/gcp/base",
     ],
 )
@@ -59,7 +74,10 @@ package_group(
     packages = [
         "//builders/gae/python37",
         "//builders/gae/python38",
+        "//builders/gae/python39",
+        "//builders/gcf/python37",
         "//builders/gcf/python38",
+        "//builders/gcf/python39",
         "//builders/gcp/base",
     ],
 )
@@ -71,6 +89,7 @@ package_group(
         "//builders/gae/ruby26",
         "//builders/gae/ruby27",
         "//builders/gcf/ruby26",
+        "//builders/gcf/ruby27",
         "//builders/gcp/base",
     ],
 )
@@ -80,11 +99,16 @@ package_group(
     packages = [
         "//builders/gcf/dotnet3",
         "//builders/gcf/go113",
+        "//builders/gcf/go116",
         "//builders/gcf/java11",
         "//builders/gcf/nodejs10",
         "//builders/gcf/nodejs12",
+        "//builders/gcf/nodejs14",
         "//builders/gcf/php74",
+        "//builders/gcf/python37",
         "//builders/gcf/python38",
+        "//builders/gcf/python39",
         "//builders/gcf/ruby26",
+        "//builders/gcf/ruby27",
     ],
 )

@@ -24,7 +24,6 @@ import (
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/php"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -34,7 +33,7 @@ const (
 
 	// ffPackageWithVersion is the package that we `composer require` when adding the functions
 	// framework to an existing vendor directory.
-	ffPackageWithVersion = ffPackage + ":^0.3"
+	ffPackageWithVersion = ffPackage + ":^0.7"
 
 	ffGitHubURL    = "https://github.com/GoogleCloudPlatform/functions-framework-php"
 	ffPackagistURL = "https://packagist.org/packages/google/cloud-functions-framework"
@@ -54,12 +53,11 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if _, ok := os.LookupEnv(env.FunctionTarget); ok {
-		ctx.OptIn("%s set", env.FunctionTarget)
+		return gcp.OptInEnvSet(env.FunctionTarget), nil
 	}
-	ctx.OptOut("%s not set", env.FunctionTarget)
-	return nil
+	return gcp.OptOutEnvNotSet(env.FunctionTarget), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -85,9 +83,8 @@ func buildFn(ctx *gcp.Context) error {
 
 	ctx.AddWebProcess([]string{"/bin/bash", "-c", fmt.Sprintf("php -S 0.0.0.0:${PORT} %s", routerScript)})
 
-	l := ctx.Layer("functions-framework")
+	l := ctx.Layer("functions-framework", gcp.BuildLayer, gcp.LaunchLayer)
 	ctx.SetFunctionsEnvVars(l)
-	ctx.WriteMetadata(l, nil, layers.Build, layers.Launch)
 	return nil
 }
 

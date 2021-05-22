@@ -21,7 +21,6 @@ import (
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
 )
 
 const (
@@ -32,17 +31,15 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if _, ok := os.LookupEnv(env.FunctionTarget); ok {
-		ctx.OptIn("%s set", env.FunctionTarget)
+		return gcp.OptInEnvSet(env.FunctionTarget), nil
 	}
-	ctx.OptOut("%s not set", env.FunctionTarget)
-	return nil
+	return gcp.OptOutEnvNotSet(env.FunctionTarget), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	l := ctx.Layer(layerName)
+	l := ctx.Layer(layerName, gcp.BuildLayer, gcp.LaunchLayer)
 	ctx.SetFunctionsEnvVars(l)
-	ctx.WriteMetadata(l, nil, layers.Build, layers.Launch)
 	return nil
 }

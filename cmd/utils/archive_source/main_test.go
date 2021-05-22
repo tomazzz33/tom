@@ -24,8 +24,43 @@ import (
 	"testing"
 
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/buildpack"
+	"github.com/buildpacks/libcnb"
 )
+
+func TestDetect(t *testing.T) {
+	testCases := []struct {
+		name  string
+		files map[string]string
+		env   []string
+		stack string
+		want  int
+	}{
+		{
+			name: "clear source not set",
+			want: 0,
+		},
+		{
+			name: "clear source invalid",
+			env:  []string{"GOOGLE_CLEAR_SOURCE=giraffe"},
+			want: 1,
+		},
+		{
+			name: "clear source false",
+			env:  []string{"GOOGLE_CLEAR_SOURCE=false"},
+			want: 0,
+		},
+		{
+			name: "clear source true",
+			env:  []string{"GOOGLE_CLEAR_SOURCE=true"},
+			want: 100,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gcp.TestDetectWithStack(t, detectFn, tc.name, tc.files, tc.env, tc.stack, tc.want)
+		})
+	}
+}
 
 func TestArchiveSource(t *testing.T) {
 	type testFile struct {
@@ -112,7 +147,7 @@ func TestArchiveSource(t *testing.T) {
 			defer os.RemoveAll(srcDir)
 
 			sp := filepath.Join(srcDir, archiveName)
-			archiveSource(gcp.NewContext(buildpack.Info{}), sp, appDir)
+			archiveSource(gcp.NewContext(libcnb.BuildpackInfo{}), sp, appDir)
 
 			if _, err := os.Stat(sp); err != nil {
 				if os.IsNotExist(err) {

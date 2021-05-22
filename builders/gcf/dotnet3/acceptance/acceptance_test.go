@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -37,6 +37,12 @@ func TestAcceptance(t *testing.T) {
 		{
 			Name: "cs multiple targets",
 			App:  "cs_multiple_targets",
+			Env:  []string{"GOOGLE_FUNCTION_TARGET=TestFunction.Function"},
+			Path: "/function",
+		},
+		{
+			Name: "cs nested configuration",
+			App:  "cs_nested_configuration",
 			Env:  []string{"GOOGLE_FUNCTION_TARGET=TestFunction.Function"},
 			Path: "/function",
 		},

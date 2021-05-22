@@ -22,9 +22,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/appengine"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/appstart"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/buildpack"
+	"github.com/buildpacks/libcnb"
 )
 
 func TestDetect(t *testing.T) {
@@ -122,7 +122,7 @@ func TestEntrypoint(t *testing.T) {
 					t.Fatalf("writing file %s: %v", fn, err)
 				}
 			}
-			ctx := gcp.NewContext(buildpack.Info{ID: "id", Name: "name", Version: "version"})
+			ctx := gcp.NewContext(libcnb.BuildpackInfo{ID: "id", Name: "name", Version: "version"})
 
 			got, gotErr := entrypoint(ctx, tempDir)
 
@@ -133,8 +133,8 @@ func TestEntrypoint(t *testing.T) {
 				return
 			}
 
-			want := appengine.Entrypoint{
-				Type:    appengine.EntrypointGenerated.String(),
+			want := appstart.Entrypoint{
+				Type:    appstart.EntrypointGenerated.String(),
 				Command: tc.want,
 			}
 			if !reflect.DeepEqual(*got, want) {

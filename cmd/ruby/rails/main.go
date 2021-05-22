@@ -24,14 +24,14 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if !ctx.FileExists("bin", "rails") {
-		ctx.OptOut("bin/rails not found.")
+		return gcp.OptOutFileNotFound("bin/rails"), nil
 	}
 	if !needsRailsAssetPrecompile(ctx) {
-		ctx.OptOut("Rails assets do not need precompilation.")
+		return gcp.OptOut("Rails assets do not need precompilation"), nil
 	}
-	return nil
+	return gcp.OptIn("found Rails assets to precompile"), nil
 }
 
 func needsRailsAssetPrecompile(ctx *gcp.Context) bool {
@@ -60,7 +60,8 @@ func buildFn(ctx *gcp.Context) error {
 	ctx.Logf("Running Rails asset precompilation")
 
 	// It is common practise in Ruby asset precompilation to ignore non-zero exit codes.
-	result, err := ctx.ExecWithErr([]string{"bundle", "exec", "bin/rails", "assets:precompile"}, gcp.WithEnv("RAILS_ENV=production"), gcp.WithUserAttribution)
+	result, err := ctx.ExecWithErr([]string{"bundle", "exec", "bin/rails", "assets:precompile"},
+		gcp.WithEnv("RAILS_ENV=production", "MALLOC_ARENA_MAX=2", "RAILS_LOG_TO_STDOUT=true", "LANG=C.utf8"), gcp.WithUserAttribution)
 	if err != nil && result != nil && result.ExitCode != 0 {
 		ctx.Logf("WARNING: Asset precompilation returned non-zero exit code %d. Ignoring.", result.ExitCode)
 		return nil

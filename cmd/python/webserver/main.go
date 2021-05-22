@@ -17,77 +17,48 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/python"
 )
 
 const (
-	layerName string = "gunicorn"
+	layerName = "gunicorn"
 )
 
 var (
 	gunicornRegexp = regexp.MustCompile(`(?m)^gunicorn\b([^-]|$)`)
 	eggRegexp      = regexp.MustCompile(`(?m)#egg=gunicorn$`)
-	versionRegexp  = regexp.MustCompile(`(?m)^gunicorn\ \((.*?)\)`)
 )
-
-// metadata represents metadata stored for a dependencies layer.
-type metadata struct {
-	GunicornVersion string `toml:"gunicorn_version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if os.Getenv(env.Entrypoint) != "" {
-		ctx.OptOut("custom entrypoint present")
+		return gcp.OptOut("custom entrypoint present"), nil
 	}
 	if ctx.FileExists("requirements.txt") && gunicornPresentInRequirements(ctx, "requirements.txt") {
-		ctx.OptOut("gunicorn present in requirements.txt")
+		return gcp.OptOut("gunicorn present in requirements.txt"), nil
 	}
-	return nil
+	if ctx.FileExists("requirements.txt") {
+		return gcp.OptIn("gunicorn missing from requirements.txt", gcp.WithBuildPlans(python.RequirementsProvidesPlan)), nil
+	}
+	return gcp.OptIn("requirements.txt with gunicorn not found", gcp.WithBuildPlans(python.RequirementsProvidesPlan)), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
-	var meta metadata
-	l := ctx.Layer(layerName)
-	ctx.ReadMetadata(l, &meta)
+	l := ctx.Layer(layerName, gcp.BuildLayer)
 
-	// Check for up to date gunicorn version
-	raw := ctx.Exec([]string{"python3", "-m", "pip", "search", "gunicorn"}, gcp.WithUserAttribution).Stdout
-	match := versionRegexp.FindStringSubmatch(raw)
-	if len(match) < 2 || match[1] == "" {
-		return fmt.Errorf("pip search returned unexpected gunicorn version %q", raw)
-	}
-
-	version := match[1]
-	ctx.Debugf("Current gunicorn version: %q", version)
-	ctx.Debugf(" Cached gunicorn version: %q", meta.GunicornVersion)
-	if version == meta.GunicornVersion {
-		ctx.CacheHit(layerName)
-		ctx.Logf("Dependencies cache hit, skipping installation.")
-		return nil
-	}
-	ctx.CacheMiss(layerName)
-
-	if meta.GunicornVersion == "" {
-		ctx.Debugf("No metadata found from a previous build, skipping cache.")
-	}
-
-	ctx.Logf("Installing gunicorn.")
-	ctx.Exec([]string{"python3", "-m", "pip", "install", "--upgrade", "gunicorn", "-t", l.Root}, gcp.WithUserAttribution)
-
-	ctx.PrependPathSharedEnv(l, "PYTHONPATH", l.Root)
-
-	meta.GunicornVersion = version
-	ctx.WriteMetadata(l, &meta, layers.Build, layers.Cache, layers.Launch)
+	// The pip install is performed by the pip buildpack; see python.InstallRequirements.
+	ctx.Debugf("Adding webserver requirements.txt to the list of requirements files to install.")
+	r := filepath.Join(ctx.BuildpackRoot(), "requirements.txt")
+	l.BuildEnvironment.Append(python.RequirementsFilesEnv, string(os.PathListSeparator)+r)
 	return nil
 }
 

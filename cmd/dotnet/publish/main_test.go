@@ -19,12 +19,11 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"text/template"
 
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/buildpack"
+	"github.com/buildpacks/libcnb"
 )
 
 func TestGetAssemblyName(t *testing.T) {
@@ -81,7 +80,7 @@ func TestGetAssemblyName(t *testing.T) {
 		},
 	}
 	for _, tc := range tcs {
-		ctx := gcp.NewContext(buildpack.Info{})
+		ctx := gcp.NewContext(libcnb.BuildpackInfo{})
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir, err := ioutil.TempDir("", "dotnettest")
 			if err != nil {
@@ -120,13 +119,13 @@ func TestGetEntrypoint(t *testing.T) {
 			name: "dll from project file",
 			exe:  "myapp.dll",
 			proj: "myapp.proj",
-			want: "dotnet {{.Tmp}}/myapp.dll",
+			want: "cd {{.Tmp}} && exec dotnet myapp.dll",
 		},
 		{
 			name: "dll from project file with dots",
 			exe:  "my.app.dll",
 			proj: "my.app.proj",
-			want: "dotnet {{.Tmp}}/my.app.dll",
+			want: "cd {{.Tmp}} && exec dotnet my.app.dll",
 		},
 		{
 			name: "exe from assembly name",
@@ -139,7 +138,7 @@ func TestGetEntrypoint(t *testing.T) {
 		</PropertyGroup>
 
 	</Project>`,
-			want: "dotnet {{.Tmp}}/customapp.dll",
+			want: "cd {{.Tmp}} && exec dotnet customapp.dll",
 		},
 		{
 			name: "dll from assembly name",
@@ -152,13 +151,13 @@ func TestGetEntrypoint(t *testing.T) {
 		</PropertyGroup>
 
 	</Project>`,
-			want: "dotnet {{.Tmp}}/customapp.dll",
+			want: "cd {{.Tmp}} && exec dotnet customapp.dll",
 		},
 	}
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := gcp.NewContext(buildpack.Info{})
+			ctx := gcp.NewContext(libcnb.BuildpackInfo{})
 
 			tmpDir, err := ioutil.TempDir("", "dotnettest")
 			if err != nil {
@@ -197,7 +196,7 @@ func TestGetEntrypoint(t *testing.T) {
 				t.Fatalf("executing template: %v", err)
 			}
 
-			if want := buf.String(); strings.Join(ep, " ") != want {
+			if want := buf.String(); ep != want {
 				t.Errorf("got %s, want %s", ep, want)
 			}
 		})
@@ -254,6 +253,14 @@ func TestDetect(t *testing.T) {
 			name: "unsupported .pyproj",
 			files: map[string]string{
 				".pyproj": "",
+			},
+			want: 100,
+		},
+		{
+			name: "unsupported partly matching",
+			files: map[string]string{
+				"Program.cs":   "",
+				"app.mycsproj": "",
 			},
 			want: 100,
 		},

@@ -24,32 +24,26 @@ import (
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/buildpacks/libcnb"
 )
 
 const (
 	layerName                     = "functions-framework"
 	javaFunctionInvokerURLBase    = "https://maven-central.storage-download.googleapis.com/maven2/com/google/cloud/functions/invoker/java-function-invoker/"
-	defaultFrameworkVersion       = "1.0.0-beta2"
-	functionsFrameworkMetadataURL = javaFunctionInvokerURLBase + "maven-metadata.xml"
+	defaultFrameworkVersion       = "1.0.2"
 	functionsFrameworkURLTemplate = javaFunctionInvokerURLBase + "%[1]s/java-function-invoker-%[1]s.jar"
+	versionKey                    = "version"
 )
-
-// metadata represents metadata stored for the functions framework layer.
-type metadata struct {
-	Version string `toml:"version"`
-}
 
 func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if _, ok := os.LookupEnv(env.FunctionTarget); ok {
-		ctx.OptIn("%s set", env.FunctionTarget)
+		return gcp.OptInEnvSet(env.FunctionTarget), nil
 	}
-	ctx.OptOut("%s not set", env.FunctionTarget)
-	return nil
+	return gcp.OptOutEnvNotSet(env.FunctionTarget), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -79,9 +73,9 @@ func buildFn(ctx *gcp.Context) error {
 	}
 
 	launcherSource := filepath.Join(ctx.BuildpackRoot(), "launch.sh")
-	launcherTarget := filepath.Join(layer.Root, "launch.sh")
+	launcherTarget := filepath.Join(layer.Path, "launch.sh")
 	createLauncher(ctx, launcherSource, launcherTarget)
-	ctx.AddWebProcess([]string{launcherTarget, "java", "-jar", filepath.Join(layer.Root, "functions-framework.jar"), "--classpath", classpath})
+	ctx.AddWebProcess([]string{launcherTarget, "java", "-jar", filepath.Join(layer.Path, "functions-framework.jar"), "--classpath", classpath})
 
 	return nil
 }
@@ -119,13 +113,21 @@ func classpath(ctx *gcp.Context) (string, error) {
 // mavenClasspath determines the --classpath when there is a pom.xml. This will consist of the jar file built
 // from the pom.xml itself, plus all jar files that are dependencies mentioned in the pom.xml.
 func mavenClasspath(ctx *gcp.Context) (string, error) {
+
+	mvn := "mvn"
+
+	// If this project has the Maven Wrapper, we should use it
+	if ctx.FileExists("mvnw") {
+		mvn = "./mvnw"
+	}
+
 	// Copy the dependencies of the function (`<dependencies>` in pom.xml) into target/dependency.
-	ctx.Exec([]string{"mvn", "dependency:copy-dependencies"}, gcp.WithUserAttribution)
+	ctx.Exec([]string{mvn, "--batch-mode", "dependency:copy-dependencies"}, gcp.WithUserAttribution)
 
 	// Extract the artifact/version coordinates from the user's pom.xml definitions.
 	// mvn help:evaluate is quite slow so we do it this way rather than calling it twice.
 	// The name of the built jar file will be <artifact>-<version>.jar, for example myfunction-0.9.jar.
-	execResult := ctx.Exec([]string{"mvn", "help:evaluate", "-q", "-DforceStdout", "-Dexpression=project.artifactId/${project.version}"}, gcp.WithUserAttribution)
+	execResult := ctx.Exec([]string{mvn, "help:evaluate", "-q", "-DforceStdout", "-Dexpression=project.artifactId/${project.version}"}, gcp.WithUserAttribution)
 	groupArtifactVersion := execResult.Stdout
 	components := strings.Split(groupArtifactVersion, "/")
 	if len(components) != 2 {
@@ -144,20 +146,30 @@ func mavenClasspath(ctx *gcp.Context) (string, error) {
 
 // gradleClasspath determines the --classpath when there is a build.gradle. This will consist of the jar file built
 // from the build.gradle, plus all jar files that are dependencies mentioned there.
-// Unlike Maven, Gradle doesn't have a simple way to query the contents of the build.gradle. But we can execute
-// a script that includes the user's script and also defines some extra tasks for the query we need
-// and for dependency copying.
+// Unlike Maven, Gradle doesn't have a simple way to query the contents of the build.gradle. But we can update
+// the user's build.gradle to append tasks that do that. This is a bit ugly, but using --init-script didn't work
+// because apparently you can't define tasks there; and having the predefined script include the user's build.gradle
+// didn't work very well either, because you can't use a plugins {} clause in an included script.
 func gradleClasspath(ctx *gcp.Context) (string, error) {
-	scriptSource := filepath.Join(ctx.BuildpackRoot(), "extra_tasks.gradle")
-	scriptText := ctx.ReadFile(scriptSource)
-	scriptTarget := "_javaFunctionExtraTasks.gradle"
-	ctx.WriteFile(scriptTarget, scriptText, 0644)
+	extraTasksSource := filepath.Join(ctx.BuildpackRoot(), "extra_tasks.gradle")
+	extraTasksText := ctx.ReadFile(extraTasksSource)
+	if err := os.Chmod("build.gradle", 0644); err != nil {
+		return "", gcp.InternalErrorf("making build.gradle writable: %v", err)
+	}
+	f, err := os.OpenFile("build.gradle", os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return "", gcp.InternalErrorf("opening build.gradle for appending: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(extraTasksText); err != nil {
+		return "", gcp.InternalErrorf("appending extra definitions to build.gradle: %v", err)
+	}
 
-	// Copy the dependencies of the function (`dependencies {...}` in build.gradle) into _javaFunctionDependencies.
-	ctx.Exec([]string{"gradle", "--build-file", scriptTarget, "--quiet", "_javaFunctionCopyAllDependencies"}, gcp.WithUserAttribution)
+	// Copy the dependencies of the function (`dependencies {...}` in build.gradle) into build/_javaFunctionDependencies.
+	ctx.Exec([]string{"gradle", "--quiet", "_javaFunctionCopyAllDependencies"}, gcp.WithUserAttribution)
 
 	// Extract the name of the target jar.
-	execResult := ctx.Exec([]string{"gradle", "--build-file", scriptTarget, "--quiet", "_javaFunctionPrintJarTarget"}, gcp.WithUserAttribution)
+	execResult := ctx.Exec([]string{"gradle", "--quiet", "_javaFunctionPrintJarTarget"}, gcp.WithUserAttribution)
 	jarName := strings.TrimSpace(execResult.Stdout)
 	if !ctx.FileExists(jarName) {
 		return "", gcp.UserErrorf("expected output jar %s does not exist", jarName)
@@ -165,17 +177,18 @@ func gradleClasspath(ctx *gcp.Context) (string, error) {
 
 	// The Functions Framework understands "*" to mean every jar file in that directory.
 	// So this classpath consists of the just-built jar and all of the dependency jars.
-	return fmt.Sprintf("%s:_javaFunctionDependencies/*", jarName), nil
+	return fmt.Sprintf("%s:build/_javaFunctionDependencies/*", jarName), nil
 }
 
-func installFunctionsFramework(ctx *gcp.Context, layer *layers.Layer) error {
+func installFunctionsFramework(ctx *gcp.Context, layer *libcnb.Layer) error {
+	layer.Launch = true
+	layer.Cache = true
 	frameworkVersion := defaultFrameworkVersion
 	// TODO(emcmanus): extract framework version from pom.xml if present
 
 	// Install functions-framework.
-	var meta metadata
-	ctx.ReadMetadata(layer, &meta)
-	if frameworkVersion == meta.Version {
+	metaVersion := ctx.GetMetadata(layer, versionKey)
+	if frameworkVersion == metaVersion {
 		ctx.CacheHit(layerName)
 	} else {
 		ctx.CacheMiss(layerName)
@@ -183,16 +196,14 @@ func installFunctionsFramework(ctx *gcp.Context, layer *layers.Layer) error {
 		if err := installFramework(ctx, layer, frameworkVersion); err != nil {
 			return err
 		}
-		meta.Version = frameworkVersion
-
-		ctx.WriteMetadata(layer, meta, layers.Launch, layers.Cache)
+		ctx.SetMetadata(layer, versionKey, frameworkVersion)
 	}
 	return nil
 }
 
-func installFramework(ctx *gcp.Context, layer *layers.Layer, version string) error {
+func installFramework(ctx *gcp.Context, layer *libcnb.Layer, version string) error {
 	url := fmt.Sprintf(functionsFrameworkURLTemplate, version)
-	ffName := filepath.Join(layer.Root, "functions-framework.jar")
+	ffName := filepath.Join(layer.Path, "functions-framework.jar")
 	result, err := ctx.ExecWithErr([]string{"curl", "--silent", "--fail", "--show-error", "--output", ffName, url})
 	// We use ExecWithErr rather than plain Exec because if it fails we want to exit with an error message better
 	// than "Failure: curl: (22) The requested URL returned error: 404".

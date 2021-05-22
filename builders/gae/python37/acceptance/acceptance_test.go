@@ -16,7 +16,8 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/appengine"
 )
 
 func init() {
@@ -32,10 +33,23 @@ func TestAcceptance(t *testing.T) {
 			App: "no_requirements_txt",
 		},
 		{
-			App: "requirements_txt",
+			App:           "requirements_txt",
+			MustNotOutput: []string{`WARNING: You are using pip version`},
+		},
+		{
+			App: "requirements_bin_conflict",
+		},
+		{
+			App: "requirements_builtin_conflict",
 		},
 		{
 			App: "pip_dependency",
+		},
+		{
+			Name: "conflicting dependencies",
+			App:  "pip_check",
+			// The warning message is cut short because it's not deterministic.
+			MustOutput: []string{`WARNING: Found incompatible dependencies: "sub-dependency-`},
 		},
 		{
 			App: "gunicorn_present",
@@ -51,6 +65,19 @@ func TestAcceptance(t *testing.T) {
 			Name: "custom gunicorn entrypoint",
 			App:  "gunicorn_present",
 			Env:  []string{"GOOGLE_ENTRYPOINT=gunicorn main:app"},
+		},
+		// Test that we get a warning when GAE_APP_ENGINE_APIS is set but no lib is used.
+		{
+			Name:       "GAE_APP_ENGINE_APIS set with no use",
+			App:        "no_requirements_txt",
+			Env:        []string{"GAE_APP_ENGINE_APIS=TRUE"},
+			MustOutput: []string{appengine.UnusedAPIWarning},
+		},
+		// Test that we get a warning using SDK libraries without setting flag.
+		{
+			Name:       "appengine_sdk dependencies without flag",
+			App:        "appengine_sdk",
+			MustOutput: []string{appengine.DepWarning},
 		},
 	}
 	for _, tc := range testCases {

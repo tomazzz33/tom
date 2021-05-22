@@ -16,7 +16,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -29,9 +29,16 @@ func TestAcceptancePython(t *testing.T) {
 
 	testCases := []acceptance.Test{
 		{
-			Name:    "entrypoint from procfile",
+			Name:    "entrypoint from procfile web",
 			App:     "python/simple",
 			MustUse: []string{pythonRuntime, pythonPIP, entrypoint},
+		},
+		{
+			Name:       "entrypoint from procfile custom",
+			App:        "python/simple",
+			Path:       "/custom",
+			Entrypoint: "custom", // Must match the non-web process in Procfile.
+			MustUse:    []string{pythonRuntime, pythonPIP, entrypoint},
 		},
 		{
 			Name:    "entrypoint from env",
@@ -73,6 +80,35 @@ func TestAcceptancePython(t *testing.T) {
 			Env:     []string{"GOOGLE_ENTRYPOINT=gunicorn -b :8080 main:app"},
 			MustUse: []string{pythonRuntime, pythonPIP, entrypoint},
 		},
+	}
+	// Tests for all published versions of Python.
+	// Unlike with the other languages, we control the versions published to GCS.
+	for _, v := range []string{
+		"3.7.0",
+		"3.7.1",
+		"3.7.2",
+		"3.7.3",
+		"3.7.4",
+		"3.7.5",
+		"3.7.6",
+		"3.7.7",
+		"3.7.8",
+		"3.7.9",
+		"3.8.0",
+		"3.8.1",
+		"3.8.2",
+		"3.8.3",
+		"3.8.4",
+		"3.8.5",
+		"3.8.6",
+	} {
+		testCases = append(testCases, acceptance.Test{
+			Name:    "runtime version " + v,
+			App:     "python/version",
+			Path:    "/version?want=" + v,
+			Env:     []string{"GOOGLE_RUNTIME_VERSION=" + v},
+			MustUse: []string{pythonRuntime, pythonPIP, entrypoint},
+		})
 	}
 	for _, tc := range testCases {
 		tc := tc

@@ -14,9 +14,14 @@
 package acceptance
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/buildpacks/pkg/acceptance"
+	"github.com/GoogleCloudPlatform/buildpacks/internal/acceptance"
 )
 
 func init() {
@@ -26,6 +31,20 @@ func init() {
 const (
 	gomod = "google.go.gomod"
 )
+
+func vendorSetup(builder, src string) error {
+	// The setup function runs `go mod vendor` to vendor dependencies specified in go.mod.
+	args := strings.Fields(fmt.Sprintf("docker run --rm -v %s:/workspace -w /workspace -u root %s go mod vendor", src, builder))
+	cmd := exec.Command(args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("vendoring dependencies: %v, output:\n%s", err, out)
+	}
+	// Vendored functions in Go 1.13 cannot contain go.mod.
+	if err := os.Remove(filepath.Join(src, "go.mod")); err != nil {
+		return fmt.Errorf("removing go.mod: %v", err)
+	}
+	return nil
+}
 
 func TestAcceptance(t *testing.T) {
 	builder, cleanup := acceptance.CreateBuilder(t)
@@ -39,25 +58,39 @@ func TestAcceptance(t *testing.T) {
 			Path: "/Func",
 		},
 		{
-			Name:    "function without framework",
-			App:     "no_framework",
-			Env:     []string{"GOOGLE_FUNCTION_TARGET=Func"},
-			MustUse: []string{gomod},
-			Path:    "/Func",
+			Name: "function without framework",
+			App:  "no_framework",
+			Env:  []string{"GOOGLE_FUNCTION_TARGET=Func"},
+			Path: "/Func",
 		},
 		{
 			Name:       "vendored function without framwork",
 			App:        "no_framework_vendored",
 			Env:        []string{"GOOGLE_FUNCTION_TARGET=Func"},
-			MustNotUse: []string{gomod},
 			Path:       "/Func",
+			MustOutput: []string{"Found function with vendored dependencies excluding functions-framework"},
 		},
 		{
-			Name:    "function with framework",
-			App:     "with_framework",
-			Env:     []string{"GOOGLE_FUNCTION_TARGET=Func"},
-			MustUse: []string{gomod},
-			Path:    "/Func",
+			Name:       "vendored function with framework",
+			App:        "with_framework",
+			Env:        []string{"GOOGLE_FUNCTION_TARGET=Func"},
+			MustOutput: []string{"Found function with vendored dependencies including functions-framework"},
+			Path:       "/Func",
+			Setup:      vendorSetup,
+		},
+		{
+			Name: "function with old framework",
+			App:  "with_framework_old_version",
+			Env:  []string{"GOOGLE_FUNCTION_TARGET=Func"},
+			Path: "/Func",
+		},
+		{
+			Name:       "vendored function with old framework",
+			App:        "with_framework_old_version",
+			Env:        []string{"GOOGLE_FUNCTION_TARGET=Func"},
+			MustOutput: []string{"Found function with vendored dependencies including functions-framework"},
+			Path:       "/Func",
+			Setup:      vendorSetup,
 		},
 		{
 			Name: "function at /*",
@@ -85,6 +118,30 @@ func TestAcceptance(t *testing.T) {
 			)
 
 			acceptance.TestApp(t, builder, tc)
+		})
+	}
+}
+
+func TestFailures(t *testing.T) {
+	builder, cleanup := acceptance.CreateBuilder(t)
+	t.Cleanup(cleanup)
+
+	testCases := []acceptance.FailureTest{
+		{
+			App:       "no_framework_relative",
+			Env:       []string{"GOOGLE_FUNCTION_TARGET=Func"},
+			MustMatch: "the module path in the function's go.mod must contain a dot in the first path element before a slash, e.g. example.com/module, found: func",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.App, func(t *testing.T) {
+			t.Parallel()
+
+			tc.Env = append(tc.Env, "GOOGLE_RUNTIME=go113")
+
+			acceptance.TestBuildFailure(t, builder, tc)
 		})
 	}
 }

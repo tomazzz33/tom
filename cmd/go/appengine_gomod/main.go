@@ -24,7 +24,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/buildpacks/pkg/env"
 	gcp "github.com/GoogleCloudPlatform/buildpacks/pkg/gcpbuildpack"
-	"github.com/buildpack/libbuildpack/layers"
+	"github.com/GoogleCloudPlatform/buildpacks/pkg/golang"
 )
 
 const (
@@ -37,16 +37,16 @@ func main() {
 	gcp.Main(detectFn, buildFn)
 }
 
-func detectFn(ctx *gcp.Context) error {
+func detectFn(ctx *gcp.Context) (gcp.DetectResult, error) {
 	if !ctx.FileExists("go.mod") {
-		ctx.OptOut("go.mod file not found")
+		return gcp.OptOutFileNotFound("go.mod"), nil
 	}
 
 	if path, exists := os.LookupEnv(env.Buildable); exists {
-		ctx.OptOut("%s already defined as %q", env.Buildable, path)
+		return gcp.OptOut(fmt.Sprintf("%s already defined as %q", env.Buildable, path)), nil
 	}
 
-	return nil
+	return gcp.OptIn(fmt.Sprintf("found go.mod and %s is not set", env.Buildable)), nil
 }
 
 func buildFn(ctx *gcp.Context) error {
@@ -64,9 +64,16 @@ func buildFn(ctx *gcp.Context) error {
 		}
 	}
 
-	l := ctx.Layer("main_env")
-	ctx.OverrideBuildEnv(l, env.Buildable, buildMainPath)
-	ctx.WriteMetadata(l, nil, layers.Build)
+	l := ctx.Layer("main_env", gcp.BuildLayer)
+	l.BuildEnvironment.Override(env.Buildable, buildMainPath)
+
+	// HACK: For backwards compatibility on App Engine Go 1.11:
+	// Copy all files to a layer directory that ends with /srv because the appengine package relies on the name:
+	// https://github.com/golang/appengine/blob/553959209a20f3be281c16dd5be5c740a893978f/delay/delay.go#L136
+	// We change the work directory instead of modifying env.Buildable, because the latter is not necessarily a filesystem path.
+	srvl := ctx.Layer("srv", gcp.BuildLayer)
+	srvl.BuildEnvironment.Override(golang.BuildDirEnv, srvl.Path)
+	ctx.Exec([]string{"cp", "--dereference", "-R", ".", srvl.Path}, gcp.WithUserTimingAttribution)
 
 	return nil
 }
